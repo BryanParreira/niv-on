@@ -1,4 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { GettingStarted } from "../components/Guide";
 import { useEffect, useMemo, useState } from "react";
 import { api, type InterfaceInfo } from "../api";
 import { AlertList } from "../components/AlertList";
@@ -147,6 +148,7 @@ export function Dashboard({ onError }: { onError: (e: string | null) => void }) 
   return (
     <>
       {showWelcome && <Welcome onError={onError} />}
+      <GettingStarted />
       {status?.network?.kind === "demo" && (
         <div className="banner warn">
           <Icon name="beaker" />

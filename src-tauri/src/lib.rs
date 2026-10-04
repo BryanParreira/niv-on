@@ -1255,7 +1255,168 @@ struct TopoEdge {
     to: String,
     kind: &'static str,
     bytes: u64,
+    /// Bytes sent by `from` / received by `from`.
+    tx: u64,
+    rx: u64,
+    last_seen: Option<chrono::DateTime<chrono::Utc>>,
+    ports: Vec<u16>,
     suspicious: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreatDevice {
+    mac: String,
+    label: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreatReason {
+    alert_id: u64,
+    rule: String,
+    title: String,
+    severity: engine::Severity,
+}
+
+/// An address involved in open alerts, with who talked to it and how much.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Threat {
+    address: String,
+    ip: Option<std::net::IpAddr>,
+    domain: Option<String>,
+    internal: bool,
+    severity: engine::Severity,
+    /// Threat-intel feed that lists the address, if any.
+    intel: Option<String>,
+    reasons: Vec<ThreatReason>,
+    devices: Vec<ThreatDevice>,
+    tx: u64,
+    rx: u64,
+    ports: Vec<u16>,
+    first_seen: Option<chrono::DateTime<chrono::Utc>>,
+    last_seen: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Open alerts that name a remote address, grouped by that address.
+fn topology_threats(eng: &engine::Engine) -> Vec<Threat> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut by: BTreeMap<String, Threat> = BTreeMap::new();
+    for a in eng.alerts.iter().filter(|a| !a.acknowledged) {
+        let Some(remote) = a.remote.as_deref().map(str::trim).filter(|r| !r.is_empty()) else {
+            continue;
+        };
+        // Impersonation alerts name the address being claimed (often the
+        // router); the threat is the device doing the claiming.
+        let impersonation = matches!(
+            a.rule.as_str(),
+            "arp-spoof" | "ip-conflict" | "rogue-router"
+        );
+        let attacker = a
+            .device
+            .filter(|_| impersonation)
+            .and_then(|m| eng.devices.get(&m));
+        if impersonation && attacker.is_none() {
+            continue;
+        }
+        let ip = match attacker {
+            Some(d) => {
+                let own = || d.ips.iter().filter(|i| i.to_string() != remote);
+                own().find(|i| i.is_ipv4()).or(own().next()).copied()
+            }
+            None => remote
+                .parse::<std::net::IpAddr>()
+                .ok()
+                .or_else(|| remote.parse::<std::net::SocketAddr>().ok().map(|s| s.ip())),
+        };
+        let remote = match attacker {
+            Some(d) if ip.is_none() => d.mac.to_string(),
+            _ => remote.to_string(),
+        };
+        let remote = remote.as_str();
+        let key = ip
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| remote.to_ascii_lowercase());
+        let t = by.entry(key.clone()).or_insert_with(|| Threat {
+            address: key.clone(),
+            ip,
+            domain: match (attacker, ip) {
+                (Some(_), _) => None,
+                (None, Some(i)) => eng.name_of(&i),
+                (None, None) => Some(key.clone()),
+            },
+            internal: attacker.is_some() || ip.is_some_and(|i| eng.is_lan(&i)),
+            severity: a.severity,
+            intel: None,
+            reasons: vec![],
+            devices: vec![],
+            tx: 0,
+            rx: 0,
+            ports: vec![],
+            first_seen: None,
+            last_seen: None,
+        });
+        t.severity = t.severity.max(a.severity);
+        t.reasons.push(ThreatReason {
+            alert_id: a.id,
+            rule: a.rule.clone(),
+            title: a.title.clone(),
+            severity: a.severity,
+        });
+        if let Some(p) = a.port {
+            if !t.ports.contains(&p) {
+                t.ports.push(p);
+            }
+        }
+        if let Some(mac) = a.device {
+            if !t.devices.iter().any(|d| d.mac == mac.to_string()) {
+                t.devices.push(ThreatDevice {
+                    mac: mac.to_string(),
+                    label: a.device_label.clone().unwrap_or_else(|| mac.to_string()),
+                });
+            }
+        }
+    }
+    for t in by.values_mut() {
+        t.intel = eng.intel_source(t.ip.as_ref(), t.domain.as_deref());
+        // Traffic each involved device exchanged with the address.
+        let mut ports: BTreeSet<u16> = t.ports.iter().copied().collect();
+        let (want_ip, suffix) = (t.ip, format!(".{}", t.address));
+        let matches = t
+            .devices
+            .iter()
+            .filter_map(|dev| dev.mac.parse().ok().and_then(|m| eng.devices.get(&m)))
+            .flat_map(|d| d.destinations.values())
+            .filter(|x| {
+                Some(x.ip) == want_ip
+                    || want_ip.is_none()
+                        && x.domain
+                            .as_deref()
+                            .is_some_and(|dom| dom == t.address || dom.ends_with(&suffix))
+            })
+            .collect::<Vec<_>>();
+        for x in matches {
+            t.tx += x.tx_bytes;
+            t.rx += x.rx_bytes;
+            ports.extend(x.ports.iter().copied());
+            t.first_seen = Some(t.first_seen.map_or(x.first_seen, |f| f.min(x.first_seen)));
+            t.last_seen = Some(t.last_seen.map_or(x.last_seen, |l| l.max(x.last_seen)));
+            t.ip.get_or_insert(x.ip);
+        }
+        t.ports = ports.into_iter().take(8).collect();
+        t.reasons.sort_by_key(|r| std::cmp::Reverse(r.severity));
+    }
+    let mut out: Vec<Threat> = by.into_values().collect();
+    out.sort_by_key(|t| {
+        (
+            std::cmp::Reverse(t.severity),
+            t.intel.is_none(),
+            std::cmp::Reverse(t.last_seen),
+        )
+    });
+    out.truncate(40);
+    out
 }
 
 /// Network map: devices, the router, LAN peers and each device's main internet hosts.
@@ -1307,6 +1468,10 @@ fn get_topology(st: State<AppState>) -> serde_json::Value {
                 to: r.clone(),
                 kind: "lan",
                 bytes: s.tx_bytes + s.rx_bytes,
+                tx: s.tx_bytes,
+                rx: s.rx_bytes,
+                last_seen: Some(s.last_seen),
+                ports: vec![],
                 suspicious: false,
             });
         }
@@ -1335,6 +1500,10 @@ fn get_topology(st: State<AppState>) -> serde_json::Value {
                 to: key,
                 kind: "internet",
                 bytes: x.tx_bytes + x.rx_bytes,
+                tx: x.tx_bytes,
+                rx: x.rx_bytes,
+                last_seen: Some(x.last_seen),
+                ports: x.ports.iter().copied().take(5).collect(),
                 suspicious: bad,
             });
         }
@@ -1348,6 +1517,10 @@ fn get_topology(st: State<AppState>) -> serde_json::Value {
                     to: peer.clone(),
                     kind: "peer",
                     bytes: x.tx_bytes + x.rx_bytes,
+                    tx: x.tx_bytes,
+                    rx: x.rx_bytes,
+                    last_seen: Some(x.last_seen),
+                    ports: x.ports.iter().copied().take(5).collect(),
                     suspicious: x.alerted,
                 });
             }
@@ -1363,7 +1536,8 @@ fn get_topology(st: State<AppState>) -> serde_json::Value {
         .collect();
     nodes.extend(inet);
     edges.retain(|e| keep.contains(&e.from) && keep.contains(&e.to));
-    serde_json::json!({ "nodes": nodes, "edges": edges })
+    let threats = topology_threats(&eng);
+    serde_json::json!({ "nodes": nodes, "edges": edges, "threats": threats, "clock": eng.clock })
 }
 
 #[tauri::command]
@@ -1761,6 +1935,11 @@ pub fn run() {
             networks.current = None;
             if let Some(id) = last.filter(|id| networks.records.contains_key(id)) {
                 let r = &networks.records[&id];
+                // Router and address ranges first: restore() recomputes which
+                // destinations are external and which device is the gateway.
+                engine.gateway_macs.clear();
+                engine.gateway_macs.extend(workspace::saved_gateway(r));
+                engine.lan_nets = r.lan_nets.clone();
                 engine.restore(r.devices.clone(), r.alerts.clone(), r.next_alert_id);
                 networks.current = Some(id);
             }

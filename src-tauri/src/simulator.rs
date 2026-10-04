@@ -354,6 +354,8 @@ impl Simulator {
                 tls: None,
                 dns_response: false,
                 dns_rcode: 0,
+                icmp: None,
+                nd_target: None,
                 payload: vec![],
             });
         } else {
@@ -377,6 +379,8 @@ impl Simulator {
                 tls: None,
                 dns_response: false,
                 dns_rcode: 0,
+                icmp: None,
+                nd_target: None,
                 payload: vec![],
             });
         }
@@ -890,5 +894,42 @@ mod tests {
             Some("Student-Laptop")
         );
         assert_eq!(eng.devices[&laptop].auto_class, "Laptop / PC");
+        // Network diagram: open alerts with an address become threat entries
+        // naming the device and the traffic it exchanged with that address.
+        let threats = crate::topology_threats(&eng);
+        for t in &threats {
+            eprintln!(
+                "THREAT {:?} {} {:?} devs={:?} tx={} rx={} ports={:?} rules={:?}",
+                t.severity,
+                t.address,
+                t.domain,
+                t.devices.iter().map(|d| &d.label).collect::<Vec<_>>(),
+                t.tx,
+                t.rx,
+                t.ports,
+                t.reasons.iter().map(|r| &r.rule).collect::<Vec<_>>()
+            );
+        }
+        assert!(!threats.is_empty(), "threat addresses listed");
+        assert!(threats.windows(2).all(|w| w[0].severity >= w[1].severity));
+        let ids = threats
+            .iter()
+            .find(|t| t.reasons.iter().any(|r| r.rule == "ids-signature"))
+            .expect("IDS hit has an address");
+        assert!(!ids.devices.is_empty());
+        assert!(
+            ids.tx + ids.rx > 0,
+            "traffic with the attacker is attributed"
+        );
+        // ARP spoofing: the threat is the spoofer, never the router it impersonates.
+        let spoof = threats
+            .iter()
+            .find(|t| t.reasons.iter().any(|r| r.rule == "arp-spoof"))
+            .expect("spoofer listed");
+        assert_ne!(
+            spoof.address,
+            std::net::Ipv4Addr::from(GATEWAY_IP).to_string()
+        );
+        assert!(spoof.internal && spoof.domain.is_none());
     }
 }

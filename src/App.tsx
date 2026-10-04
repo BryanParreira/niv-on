@@ -26,6 +26,8 @@ import { LiveFeed } from "./pages/LiveFeed";
 import { Networks } from "./pages/Networks";
 import { Rules } from "./pages/Rules";
 import { LiveProvider, useLive } from "./store";
+import { GUIDE } from "./guide";
+import { PageIntro, useGuide, useTrackVisit } from "./components/Guide";
 
 interface NavItem {
   id: Page;
@@ -45,38 +47,38 @@ const NAV: NavSection[] = [
     id: "home",
     section: "",
     items: [
-      { id: "overview", label: "Overview", icon: "home" },
-      { id: "dashboards", label: "Dashboards", icon: "dashboard" },
+      { id: "overview", label: GUIDE.overview.label, icon: "home" },
+      { id: "dashboards", label: GUIDE.dashboards.label, icon: "dashboard" },
     ],
   },
   {
     id: "investigate",
     section: "Investigate",
     items: [
-      { id: "alerts", label: "Incident review", icon: "alerts" },
-      { id: "search", label: "Search", icon: "search" },
-      { id: "devices", label: "Devices", icon: "devices" },
-      { id: "map", label: "Network map", icon: "map" },
-      { id: "feed", label: "Live feed", icon: "activity" },
+      { id: "alerts", label: GUIDE.alerts.label, icon: "alerts" },
+      { id: "search", label: GUIDE.search.label, icon: "search" },
+      { id: "devices", label: GUIDE.devices.label, icon: "devices" },
+      { id: "map", label: GUIDE.map.label, icon: "map" },
+      { id: "feed", label: GUIDE.feed.label, icon: "activity" },
     ],
   },
   {
     id: "posture",
     section: "Security posture",
     items: [
-      { id: "compliance", label: "Compliance", icon: "clipboard" },
-      { id: "intel", label: "Threat intel", icon: "crosshair" },
+      { id: "compliance", label: GUIDE.compliance.label, icon: "clipboard" },
+      { id: "intel", label: GUIDE.intel.label, icon: "crosshair" },
     ],
   },
   {
     id: "settings",
     section: "Settings",
     items: [
-      { id: "capture", label: "Capture & adapters", icon: "radar" },
-      { id: "networks", label: "Networks", icon: "globe" },
-      { id: "rules", label: "Detection rules", icon: "sliders" },
-      { id: "detections", label: "Custom detections", icon: "shield" },
-      { id: "automation", label: "Automation", icon: "bolt" },
+      { id: "capture", label: GUIDE.capture.label, icon: "radar" },
+      { id: "networks", label: GUIDE.networks.label, icon: "globe" },
+      { id: "rules", label: GUIDE.rules.label, icon: "sliders" },
+      { id: "detections", label: GUIDE.detections.label, icon: "shield" },
+      { id: "automation", label: GUIDE.automation.label, icon: "bolt" },
     ],
   },
 ];
@@ -119,6 +121,8 @@ function Shell() {
   const [deviceName, setDeviceName] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useStored<string[]>("niv.navCollapsed", []);
   const [rail, setRail] = useStored<boolean>("niv.navRail", false);
+  const [guide, setGuide] = useGuide();
+  useTrackVisit(route.page);
 
   // Pop high/critical alerts as toasts.
   useEffect(() => {
@@ -189,6 +193,9 @@ function Shell() {
 
   const running = !!status?.running;
   const current = ALL_PAGES.find((p) => p.id === route.page)!;
+  const introOpen = !guide.dismissed.includes(route.page);
+  const toggleIntro = () =>
+    setGuide((g) => ({ ...g, dismissed: introOpen ? [...g.dismissed, route.page] : g.dismissed.filter((p) => p !== route.page) }));
 
   return (
     <div className={`app ${rail ? "rail" : ""}`}>
@@ -221,7 +228,7 @@ function Shell() {
                   const idx = ALL_PAGES.findIndex((p) => p.id === n.id);
                   return (
                     <button key={n.id} className={`nav-item ${route.page === n.id ? "active" : ""}`} onClick={() => nav.go(n.id)}
-                      title={`${n.label}${idx < 9 ? ` (${isMac ? "⌘" : "Ctrl+"}${idx + 1})` : ""}`} aria-current={route.page === n.id ? "page" : undefined}>
+                      title={`${n.label}${idx < 9 ? ` (${isMac ? "⌘" : "Ctrl+"}${idx + 1})` : ""}\n${GUIDE[n.id].hint}`} aria-current={route.page === n.id ? "page" : undefined}>
                       <Icon name={n.icon} />
                       <span className="nav-label">{n.label}</span>
                       {n.id === "alerts" && (status?.alerts.open ?? 0) > 0 && <span className="count">{status!.alerts.open}</span>}
@@ -254,7 +261,13 @@ function Shell() {
                 <h1 className="ellipsis" style={{ maxWidth: 360 }}>{deviceName ?? route.device}</h1>
               </>
             ) : (
-              <h1>{current.label}</h1>
+              <>
+                <h1>{current.label}</h1>
+                <button className={`btn sm ghost icon help-btn ${introOpen ? "on" : ""}`} onClick={toggleIntro}
+                  title={introOpen ? "Hide page guide" : "What is this page? Show the guide"} aria-pressed={introOpen}>
+                  <Icon name="question" size={14} />
+                </button>
+              </>
             )}
           </div>
           {status?.network && !route.device && (
@@ -294,6 +307,7 @@ function Shell() {
                 <button className="btn sm ghost" onClick={() => setNote(null)}><Icon name="x" size={12} /></button>
               </div>
             )}
+            {!route.device && <PageIntro page={route.page} open={introOpen} onClose={toggleIntro} />}
             <ErrorBoundary resetKey={`${route.page}:${route.device ?? ""}`}>
             {route.device ? (
               <DeviceDetail key={route.device} mac={route.device} onName={setDeviceName} />

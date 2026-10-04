@@ -62,7 +62,7 @@ Every alert links to the device's full profile, is tagged with its **MITRE ATT&C
 
 **Custom detections.** Save any search as a detection (Splunk's correlation searches): it runs every minute and raises an alert for each device it returns, throttled per device. Starter detections cover critical assets at risk, Telnet on the network, unknown devices with many peers and repeat offenders.
 
-**Incident review.** Alerts move through *New → In progress → Resolved / False positive* with an owner and an investigation-notes timeline, bulk triage, and **urgency** — severity adjusted by each device's asset priority (low, medium, high, critical) — so a medium alert on a critical camera outranks a high alert on a guest phone.
+**Alerts (incident review).** Alerts move through *New → In progress → Resolved / False positive* with an owner and an investigation-notes timeline, bulk triage, and **urgency** — severity adjusted by each device's asset priority (low, medium, high, critical) — so a medium alert on a critical camera outranks a high alert on a guest phone.
 
 **Signatures and threat intelligence.** Every packet is checked against Suricata / Snort rules — built-in rules for IoT exploits (Mirai loaders, Hikvision / Huawei / Realtek / GPON RCEs, Log4Shell, miners, cleartext credentials) plus any Emerging Threats Open category or `.rules` file you add — and every connection and DNS lookup against auto-updating feeds (abuse.ch Feodo Tracker, URLhaus, ThreatFox, Tor exit nodes) and your own watchlist.
 
@@ -70,7 +70,9 @@ Every alert links to the device's full profile, is tagged with its **MITRE ATT&C
 
 **Investigate like a SOC.** Each alert opens a detail panel showing the request that triggered it (source → destination, protocol, service, name, payload excerpt), what to do about it, the device's risk breakdown, and one-click packet evidence as a Wireshark `.pcap`. Devices have an investigation timeline, a connection log and a DNS log (kept in SQLite for a configurable retention period and searchable as `index=conn` / `index=dns`), TLS (JA3/JA4) and DHCP fingerprints, and peer-group comparison against devices of the same type.
 
-**See the network.** A network diagram lays out internet → router / access points → device groups with live status and risk, and highlights paths with suspicious destinations; a force-directed graph shows every link.
+**See the network.** A network diagram lays out internet → router / access points → device groups with live traffic: moving dots show data flowing and speed up with the rate, links and devices show live upload/download rates, and hovering a device traces where its traffic goes. A **Threat addresses** panel lists every address with an open alert — the feed or rule that flagged it, the devices involved, traffic exchanged, ports and last contact — and draws the threat → router → device path in red. Impersonation alerts (ARP spoofing, rogue IPv6 router) name the attacking device, not the address it claims. A force-directed graph shows every link.
+
+**Easy to find your way.** Every page opens with a short guide — what it is for, what you can do there and where to go next — which you can hide and bring back with the **?** next to the page title. The Overview has a getting-started checklist that ticks itself off as you use the app, sidebar tooltips describe each page, and ⌘K / Ctrl+K finds pages by what they do ("vulnerabilities", "monitor mode", "playbooks").
 
 **Automate the response.** Playbooks react to alerts: desktop notification, packet evidence, open an investigation, raise asset priority, tag the device, or run your own script (for example to block the device on an OpenWrt / pfSense router). Custom detections turn any search into an alert rule; dashboards turn searches into live panels; scheduled HTML reports summarise a day or week.
 

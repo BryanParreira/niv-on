@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, inTauri, type TopoEdge, type TopoNode } from "../api";
+import { api, inTauri, type TopoEdge, type TopoNode, type Topology } from "../api";
 import { classIcon, Icon, ICON_PATHS } from "../components/Icon";
 import { NetworkDiagram } from "../components/NetworkDiagram";
 import { fmtBytes } from "../format";
@@ -99,8 +99,8 @@ export function NetworkMap() {
       return "diagram";
     }
   });
-  const [devices] = usePoll(api.getDevices, 5000);
-  const [data, setData] = useState<{ nodes: TopoNode[]; edges: TopoEdge[] } | null>(null);
+  const [devices] = usePoll(api.getDevices, 3000);
+  const [data, setData] = useState<Topology | null>(null);
   const [showInternet, setShowInternet] = useState(true);
   const [onlySuspicious, setOnlySuspicious] = useState(false);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
@@ -115,9 +115,9 @@ export function NetworkMap() {
   }, []);
   useEffect(() => {
     load();
-    const id = setInterval(load, 10_000);
+    const id = setInterval(load, mode === "diagram" ? 3_000 : 10_000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, mode]);
 
   const { nodes, edges } = useMemo(() => {
     if (!data) return { nodes: [] as TopoNode[], edges: [] as TopoEdge[] };

@@ -1034,6 +1034,18 @@ impl Engine {
         self.arp_table.clear();
     }
 
+    /// Name learned for an address from DNS answers or TLS SNI.
+    pub fn name_of(&self, ip: &IpAddr) -> Option<String> {
+        self.dns.get(ip).cloned()
+    }
+
+    /// Threat-intel feed listing this address or domain, if any.
+    pub fn intel_source(&self, ip: Option<&IpAddr>, domain: Option<&str>) -> Option<String> {
+        ip.and_then(|i| self.intel.ip(i))
+            .or_else(|| domain.and_then(|d| self.intel.domain(d)))
+            .map(|h| h.source)
+    }
+
     /// Part of this network (private range or one of its subnets).
     pub fn is_lan(&self, ip: &IpAddr) -> bool {
         is_local_ip(ip) || self.lan_nets.iter().any(|n| n.contains(ip))
@@ -3335,6 +3347,58 @@ pub fn describe(p: &PacketInfo, names: &HashMap<IpAddr, String>) -> (String, Str
             };
             return (proto.into(), txt);
         }
+        if let Some((t, c)) = n.icmp {
+            let who = |ip: &IpAddr| match names.get(ip) {
+                Some(name) => format!("{ip} ({name})"),
+                None => ip.to_string(),
+            };
+            let v6 = n.src_ip.is_ipv6();
+            let txt = match (v6, t) {
+                (true, 135) => n.nd_target.map(|x| {
+                    format!(
+                        "Neighbor solicitation: who has {}? (IPv6 address lookup, like ARP)",
+                        who(&x)
+                    )
+                }),
+                (true, 136) => n.nd_target.map(|x| {
+                    format!(
+                        "Neighbor advertisement: {} is here (answer to an address lookup)",
+                        who(&x)
+                    )
+                }),
+                (true, 133) => Some("Router solicitation: looking for an IPv6 router".into()),
+                (true, 134) => {
+                    Some("Router advertisement: announces IPv6 router and network prefix".into())
+                }
+                (true, 128) | (false, 8) => Some(format!(
+                    "Ping request {} → {}",
+                    who(&n.src_ip),
+                    who(&n.dst_ip)
+                )),
+                (true, 129) | (false, 0) => Some(format!(
+                    "Ping reply {} → {}",
+                    who(&n.src_ip),
+                    who(&n.dst_ip)
+                )),
+                (true, 1) | (false, 3) => Some(format!(
+                    "Destination unreachable (code {c}) {} → {}",
+                    who(&n.src_ip),
+                    who(&n.dst_ip)
+                )),
+                (true, 3) | (false, 11) => Some(format!(
+                    "Time exceeded {} → {}",
+                    who(&n.src_ip),
+                    who(&n.dst_ip)
+                )),
+                (true, 143) => {
+                    Some("Multicast listener report (joins IPv6 multicast groups)".into())
+                }
+                _ => None,
+            };
+            if let Some(txt) = txt {
+                return (if v6 { "ICMPv6" } else { "ICMP" }.into(), txt);
+            }
+        }
         let port_name = |p: Option<u16>| p.map(service_name).filter(|s| *s != "unknown service");
         let proto = match n.transport {
             Transport::Tcp => port_name(n.dst_port)
@@ -3429,6 +3493,29 @@ mod tests {
     use super::*;
     use crate::model::NetInfo;
 
+    #[test]
+    fn describes_ipv6_neighbor_discovery() {
+        let mut p = pkt(
+            Utc::now(),
+            Mac([2, 0, 0, 0, 0, 1]),
+            Mac([2, 0, 0, 0, 0, 2]),
+            "fe80::1",
+            "fe80::2",
+            0,
+            false,
+            86,
+        );
+        let n = p.net.as_mut().unwrap();
+        n.transport = Transport::Icmp;
+        n.dst_port = None;
+        n.icmp = Some((135, 0));
+        n.nd_target = Some("2600::5".parse().unwrap());
+        let names = HashMap::from([("2600::5".parse().unwrap(), "iPhone".to_string())]);
+        let (proto, info) = describe(&p, &names);
+        assert_eq!(proto, "ICMPv6");
+        assert!(info.contains("who has 2600::5 (iPhone)"), "{info}");
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn pkt(
         ts: DateTime<Utc>,
@@ -3459,6 +3546,8 @@ mod tests {
             tls: None,
             dns_response: false,
             dns_rcode: 0,
+            icmp: None,
+            nd_target: None,
             payload: vec![],
         });
         p

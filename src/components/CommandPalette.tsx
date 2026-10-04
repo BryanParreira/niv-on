@@ -3,31 +3,34 @@ import { api, type DeviceSummary } from "../api";
 import { useNav, type Page } from "../nav";
 import { useLive } from "../store";
 import { Avatar, Icon } from "./Icon";
+import { GUIDE } from "../guide";
 
 interface Item {
   id: string;
   icon: React.ReactNode;
   title: string;
   sub?: string;
+  /** Extra words to match that aren't shown. */
+  keywords?: string;
   group: string;
   run: () => void | Promise<unknown>;
 }
 
-const PAGES: { page: Page; title: string; icon: string }[] = [
-  { page: "overview", title: "Overview", icon: "home" },
-  { page: "dashboards", title: "Dashboards", icon: "dashboard" },
-  { page: "map", title: "Network map", icon: "map" },
-  { page: "compliance", title: "Compliance & vulnerabilities", icon: "clipboard" },
-  { page: "intel", title: "Threat intel & signatures", icon: "crosshair" },
-  { page: "automation", title: "Automation playbooks", icon: "bolt" },
-  { page: "devices", title: "Devices", icon: "devices" },
-  { page: "feed", title: "Live feed", icon: "activity" },
-  { page: "search", title: "Search (SPL)", icon: "search" },
-  { page: "alerts", title: "Incident review (alerts)", icon: "alerts" },
-  { page: "networks", title: "Networks", icon: "globe" },
-  { page: "capture", title: "Capture setup", icon: "settings" },
-  { page: "rules", title: "Detection rules & data", icon: "sliders" },
-  { page: "detections", title: "Custom detections", icon: "shield" },
+const PAGES: { page: Page; icon: string }[] = [
+  { page: "overview", icon: "home" },
+  { page: "dashboards", icon: "dashboard" },
+  { page: "alerts", icon: "alerts" },
+  { page: "search", icon: "search" },
+  { page: "devices", icon: "devices" },
+  { page: "map", icon: "map" },
+  { page: "feed", icon: "activity" },
+  { page: "compliance", icon: "clipboard" },
+  { page: "intel", icon: "crosshair" },
+  { page: "capture", icon: "radar" },
+  { page: "networks", icon: "globe" },
+  { page: "rules", icon: "sliders" },
+  { page: "detections", icon: "shield" },
+  { page: "automation", icon: "bolt" },
 ];
 
 /** Global quick-jump: pages, actions and every known device. */
@@ -52,7 +55,9 @@ export function CommandPalette({ onClose, onMessage }: { onClose: () => void; on
       ...PAGES.map((p) => ({
         id: `p-${p.page}`,
         icon: <span className="ic"><Icon name={p.icon} /></span>,
-        title: p.title,
+        title: GUIDE[p.page].label,
+        sub: GUIDE[p.page].hint,
+        keywords: GUIDE[p.page].keywords,
         group: "Go to",
         run: () => nav.go(p.page),
       })),
@@ -62,6 +67,24 @@ export function CommandPalette({ onClose, onMessage }: { onClose: () => void; on
         title: status?.running ? "Stop capture" : "Start capture",
         group: "Actions",
         run: () => done(status?.running ? api.stopCapture() : api.startCapture(), status?.running ? "Capture stopped." : "Capture started."),
+      },
+      {
+        id: "a-guide",
+        icon: <span className="ic"><Icon name="question" /></span>,
+        title: "Show getting started checklist",
+        sub: "Step-by-step tour of what to do first",
+        keywords: "help guide tour onboarding lost",
+        group: "Actions",
+        run: () => {
+          try {
+            const g = JSON.parse(localStorage.getItem("niv.guide") ?? "{}");
+            localStorage.setItem("niv.guide", JSON.stringify({ ...g, checklistHidden: false, dismissed: [] }));
+            window.dispatchEvent(new Event("niv.guide"));
+          } catch {
+            /* storage unavailable: the checklist already shows */
+          }
+          nav.go("overview");
+        },
       },
       {
         id: "a-sim",
@@ -119,7 +142,14 @@ export function CommandPalette({ onClose, onMessage }: { onClose: () => void; on
     ];
     const ql = q.trim().toLowerCase();
     if (!ql) return all.filter((i) => i.group !== "Devices").concat(all.filter((i) => i.group === "Devices").slice(0, 6));
-    return all.filter((i) => `${i.title} ${i.sub ?? ""}`.toLowerCase().includes(ql)).slice(0, 40);
+    // Every word must match somewhere (title, description or keywords).
+    const words = ql.split(/\s+/);
+    return all
+      .filter((i) => {
+        const hay = `${i.title} ${i.sub ?? ""} ${i.keywords ?? ""}`.toLowerCase();
+        return words.every((w) => hay.includes(w));
+      })
+      .slice(0, 40);
   }, [q, devices, status?.running, nav, onMessage, refresh]);
 
   useEffect(() => setSel(0), [q]);

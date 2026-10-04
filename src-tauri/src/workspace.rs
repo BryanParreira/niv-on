@@ -139,11 +139,7 @@ impl NetworkStore {
 
         eng.clear_all();
         eng.gateway_macs.clear();
-        eng.gateway_macs.extend(
-            rec.gateway_mac
-                .as_deref()
-                .and_then(|m| m.parse::<Mac>().ok()),
-        );
+        eng.gateway_macs.extend(saved_gateway(rec));
         for n in &rec.lan_nets {
             if !eng.lan_nets.contains(n) {
                 eng.lan_nets.push(*n);
@@ -167,8 +163,7 @@ impl NetworkStore {
         eng.gateway_macs.clear();
         if let Some(id) = latest {
             let r = &self.records[&id];
-            eng.gateway_macs
-                .extend(r.gateway_mac.as_deref().and_then(|m| m.parse::<Mac>().ok()));
+            eng.gateway_macs.extend(saved_gateway(r));
             eng.lan_nets = r.lan_nets.clone();
             eng.restore(r.devices.clone(), r.alerts.clone(), r.next_alert_id);
             self.current = Some(id);
@@ -312,14 +307,40 @@ impl NetworkStore {
 
 /// Keep the router's MAC once it was identified with certainty (ARP for the
 /// gateway IP, DHCP, router advertisement), so saved networks show it.
+/// The router saved for a network: the recorded MAC, or else the single
+/// device that was flagged as the gateway when the record was written.
+pub fn saved_gateway(r: &NetworkRecord) -> Option<Mac> {
+    if let Some(m) = r.gateway_mac.as_deref().and_then(|m| m.parse::<Mac>().ok()) {
+        return Some(m);
+    }
+    if r.kind != NetKind::Live {
+        return None;
+    }
+    let mut gws = r.devices.iter().filter(|d| d.is_gateway);
+    match (gws.next(), gws.next()) {
+        (Some(g), None) => Some(g.mac),
+        _ => None,
+    }
+}
+
 fn remember_router(r: &mut NetworkRecord, eng: &Engine) {
     for n in &eng.lan_nets {
         if !r.lan_nets.contains(n) && r.lan_nets.len() < 32 {
             r.lan_nets.push(*n);
         }
     }
-    if r.gateway_mac.is_none() && r.kind == NetKind::Live && eng.gateway_macs.len() == 1 {
+    if r.gateway_mac.is_some() || r.kind != NetKind::Live {
+        return;
+    }
+    if eng.gateway_macs.len() == 1 {
         r.gateway_mac = eng.gateway_macs.iter().next().map(|m| m.to_string());
+        return;
+    }
+    // Identified from router advertisements or forwarding instead of the OS
+    // route / ARP: keep it only when it is unambiguous.
+    let mut gws = eng.devices.values().filter(|d| d.is_gateway);
+    if let (Some(g), None) = (gws.next(), gws.next()) {
+        r.gateway_mac = Some(g.mac.to_string());
     }
 }
 
@@ -391,5 +412,35 @@ mod tests {
         let saved = store.persistable(&eng);
         assert!(!saved.records.contains_key(DEMO_ID), "demo never saved");
         assert_eq!(saved.records.len(), 3);
+    }
+
+    /// A router found from IPv6 router advertisements (not the OS route) and
+    /// the LAN's IPv6 prefix survive a reload of the saved network.
+    #[test]
+    fn reload_keeps_router_and_ipv6_lan() {
+        let mut eng = Engine::new(RuleSettings::default(), OuiDb::load(None));
+        let mut store = NetworkStore::default();
+        store.activate(&mut eng, meta("net:home", NetKind::Live), false);
+        let gw: Mac = "a0:8a:06:2e:ff:9a".parse().unwrap();
+        let phone: std::net::IpAddr = "2600:6c46:4500:6f0::d029".parse().unwrap();
+        see(&mut eng, "a0:8a:06:2e:ff:9a");
+        eng.devices.get_mut(&gw).unwrap().is_gateway = true;
+        eng.lan_nets
+            .push("2600:6c46:4500:6f0::/64".parse().unwrap());
+        store.snapshot(&eng);
+        assert_eq!(
+            store.records["net:home"].gateway_mac.as_deref(),
+            Some("a0:8a:06:2e:ff:9a")
+        );
+
+        // Older saves: no router MAC recorded, but the device carries the flag.
+        let mut rec = store.records["net:home"].clone();
+        rec.gateway_mac = None;
+        assert_eq!(saved_gateway(&rec), Some(gw));
+
+        store.activate(&mut eng, meta("net:other", NetKind::Live), false);
+        store.activate(&mut eng, meta("net:home", NetKind::Live), false);
+        assert!(eng.devices[&gw].is_gateway, "router still identified");
+        assert!(eng.is_lan(&phone), "IPv6 LAN prefix restored");
     }
 }

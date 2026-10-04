@@ -403,6 +403,8 @@ pub fn parse_l3(ethertype: u16, d: &[u8]) -> Option<NetInfo> {
         tls: None,
         dns_response: false,
         dns_rcode: 0,
+        icmp: None,
+        nd_target: None,
         payload: vec![],
     };
 
@@ -457,8 +459,21 @@ pub fn parse_l3(ethertype: u16, d: &[u8]) -> Option<NetInfo> {
         58 => {
             n.transport = Transport::Icmp;
             n.router_adv = parse_router_adv(l4);
+            if l4.len() >= 2 {
+                n.icmp = Some((l4[0], l4[1]));
+            }
+            // Neighbor solicitation (135) / advertisement (136): target at 8..24.
+            if matches!(l4.first(), Some(135 | 136)) && l4.len() >= 24 {
+                let t: [u8; 16] = l4[8..24].try_into().unwrap_or([0; 16]);
+                n.nd_target = Some(IpAddr::V6(t.into()));
+            }
         }
-        1 => n.transport = Transport::Icmp,
+        1 => {
+            n.transport = Transport::Icmp;
+            if l4.len() >= 2 {
+                n.icmp = Some((l4[0], l4[1]));
+            }
+        }
         6 => n.transport = Transport::Tcp,
         17 => n.transport = Transport::Udp,
         _ => {}

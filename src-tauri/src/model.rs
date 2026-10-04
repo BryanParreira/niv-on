@@ -142,6 +142,11 @@ pub struct NetInfo {
     pub dns_response: bool,
     #[serde(default)]
     pub dns_rcode: u8,
+    /// ICMP / ICMPv6 type and code, with the target of IPv6 neighbor discovery.
+    #[serde(default)]
+    pub icmp: Option<(u8, u8)>,
+    #[serde(default)]
+    pub nd_target: Option<IpAddr>,
     /// First bytes of the TCP/UDP payload, for signature matching.
     #[serde(skip)]
     pub payload: Vec<u8>,

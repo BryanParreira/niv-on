@@ -349,7 +349,34 @@ export interface TopoEdge {
   to: string;
   kind: "lan" | "internet" | "peer";
   bytes: number;
+  /** Bytes sent / received by `from`. */
+  tx: number;
+  rx: number;
+  lastSeen: string | null;
+  ports: number[];
   suspicious: boolean;
+}
+export interface Threat {
+  address: string;
+  ip: string | null;
+  domain: string | null;
+  internal: boolean;
+  severity: Severity;
+  /** Threat-intel feed listing the address, if any. */
+  intel: string | null;
+  reasons: { alertId: number; rule: string; title: string; severity: Severity }[];
+  devices: { mac: string; label: string }[];
+  tx: number;
+  rx: number;
+  ports: number[];
+  firstSeen: string | null;
+  lastSeen: string | null;
+}
+export interface Topology {
+  nodes: TopoNode[];
+  edges: TopoEdge[];
+  threats: Threat[];
+  clock: string;
 }
 
 export interface FeedStatus {
@@ -627,7 +654,7 @@ export const api = {
   getDns: (opts: { mac?: string; hours?: number; limit?: number } = {}) =>
     invoke<DnsRow[]>("get_dns", { mac: opts.mac ?? null, hours: opts.hours ?? null, limit: opts.limit ?? null }),
   getTimeline: (mac: string) => invoke<TimelineEvent[]>("get_timeline", { mac }),
-  getTopology: () => invoke<{ nodes: TopoNode[]; edges: TopoEdge[] }>("get_topology"),
+  getTopology: () => invoke<Topology>("get_topology"),
   getCompliance: () => invoke<CheckResult[]>("get_compliance"),
   intelStatus: () => invoke<IntelStatus>("intel_status"),
   updateIntel: () => invoke<IntelStatus>("update_intel"),
