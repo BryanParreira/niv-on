@@ -4,6 +4,7 @@ import { api, type InterfaceInfo } from "../api";
 import { AlertList } from "../components/AlertList";
 import { Avatar, Icon } from "../components/Icon";
 import { Mac } from "../components/Mac";
+import { Risk } from "../components/Risk";
 import { Signal } from "../components/Signal";
 import { ifIcon, ifSubtitle } from "../components/SourceSwitcher";
 import { TimeSeriesChart } from "../components/TimeSeriesChart";
@@ -99,7 +100,7 @@ export function Dashboard({ onError }: { onError: (e: string | null) => void }) 
   const nav = useNav();
   const [range, setRange] = useState<60 | 300>(60);
   const [devices] = usePoll(api.getDevices, 2000);
-  const [alerts, reloadAlerts] = usePoll(() => api.getAlerts(50), 2000);
+  const [alerts, reloadAlerts] = usePoll(() => api.getAlerts(500), 2000);
   const [showNotes, setShowNotes] = useState(false);
 
   const pts = traffic.slice(-range);
@@ -120,7 +121,22 @@ export function Dashboard({ onError }: { onError: (e: string | null) => void }) 
     return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
   }, [all]);
   const maxMix = Math.max(1, ...mix.map((m) => m[1]));
-  const openAlerts = (alerts ?? []).filter((a) => !a.acknowledged).slice(0, 7);
+  const open = useMemo(() => (alerts ?? []).filter((a) => !a.acknowledged), [alerts]);
+  const openAlerts = open.slice(0, 7);
+  const risky = useMemo(() => all.filter((d) => d.risk > 0).sort((a, b) => b.risk - a.risk).slice(0, 6), [all]);
+  // Open detections grouped by MITRE ATT&CK technique, ordered by tactic.
+  const techniques = useMemo(() => {
+    const m = new Map<string, { id: string; name: string; tactic: string; n: number; devices: Set<string> }>();
+    for (const a of open) {
+      if (!a.mitreId) continue;
+      const t = m.get(a.mitreId) ?? { id: a.mitreId, name: a.mitreName ?? "", tactic: a.tactic ?? "", n: 0, devices: new Set<string>() };
+      t.n++;
+      if (a.device) t.devices.add(a.device);
+      m.set(a.mitreId, t);
+    }
+    return [...m.values()].sort((a, b) => b.n - a.n).slice(0, 8);
+  }, [open]);
+  const maxTech = Math.max(1, ...techniques.map((t) => t.n));
   const sev = status?.alerts;
   const iot = all.filter((d) => d.isIot).length;
   const gateway = all.find((d) => d.isGateway);
@@ -288,6 +304,44 @@ export function Dashboard({ onError }: { onError: (e: string | null) => void }) 
             <dt>Dropped</dt>
             <dd>{status ? fmtNum(status.stats.dropped + status.stats.queueDropped) : "—"}</dd>
           </dl>
+        </div>
+      </div>
+
+      <div className="two">
+        <div className="card">
+          <div className="card-head"><h2>Highest risk</h2><span className="sub">open alerts weighted by severity · 24 h half-life</span></div>
+          {risky.length === 0 && <div className="empty">No device carries risk right now.</div>}
+          <table className="t compact">
+            <tbody>
+              {risky.map((d) => (
+                <tr key={d.mac} className="click" onClick={() => nav.openDevice(d.mac, "alerts")}>
+                  <td>
+                    <div className="dev-cell">
+                      <Avatar cls={d.class} iot={d.isIot} net={d.isGateway || d.isAp} self={d.isSelf} />
+                      <div style={{ minWidth: 0 }}>
+                        <div className="name ellipsis">{d.label}</div>
+                        <div className="muted small">{d.class} · {d.openAlerts} open alert{d.openAlerts === 1 ? "" : "s"}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="r"><Risk score={d.risk} wide /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="card">
+          <div className="card-head"><h2>MITRE ATT&amp;CK</h2><span className="sub">techniques behind open alerts</span></div>
+          {techniques.length === 0 && <div className="empty">No open detections.</div>}
+          <div className="bars">
+            {techniques.map((t) => (
+              <div key={t.id} className="bar-row" title={`${t.tactic} — seen on ${t.devices.size} device(s)`}>
+                <span className="ellipsis"><span className="mono dim">{t.id}</span> {t.name} <span className="muted small">· {t.tactic}</span></span>
+                <span className="num dim">{t.n}</span>
+                <div className="track"><div style={{ width: `${(t.n / maxTech) * 100}%` }} /></div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 

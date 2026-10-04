@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, inTauri, onAlerts, type Alert } from "./api";
 import { CommandPalette } from "./components/CommandPalette";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Icon } from "./components/Icon";
 import { LogoMark, Wordmark } from "./components/Logo";
 import { UpdateNotice } from "./components/UpdateNotice";
@@ -13,33 +14,96 @@ import { Capture } from "./pages/Capture";
 import { Dashboard } from "./pages/Dashboard";
 import { DeviceDetail } from "./pages/DeviceDetail";
 import { Devices } from "./pages/Devices";
+import { Automation } from "./pages/Automation";
+import { Compliance } from "./pages/Compliance";
+import { Dashboards } from "./pages/Dashboards";
+import { NetworkMap } from "./pages/NetworkMap";
+import { ThreatIntel } from "./pages/ThreatIntel";
+import { Detections } from "./pages/Detections";
+import { runAllDetections } from "./detections";
+import { Search } from "./pages/Search";
 import { LiveFeed } from "./pages/LiveFeed";
 import { Networks } from "./pages/Networks";
 import { Rules } from "./pages/Rules";
 import { LiveProvider, useLive } from "./store";
 
-const NAV: { section: string; items: { id: Page; label: string; icon: string }[] }[] = [
+interface NavItem {
+  id: Page;
+  label: string;
+  icon: string;
+}
+interface NavSection {
+  id: string;
+  /** Empty for the top group (always visible, no header). */
+  section: string;
+  items: NavItem[];
+}
+
+// Grouped by workflow: see what's happening -> investigate -> assess -> configure.
+const NAV: NavSection[] = [
   {
-    section: "Monitor",
+    id: "home",
+    section: "",
     items: [
-      { id: "overview", label: "Overview", icon: "dashboard" },
-      { id: "devices", label: "Devices", icon: "devices" },
-      { id: "feed", label: "Live feed", icon: "activity" },
-      { id: "alerts", label: "Alerts", icon: "alerts" },
+      { id: "overview", label: "Overview", icon: "home" },
+      { id: "dashboards", label: "Dashboards", icon: "dashboard" },
     ],
   },
   {
-    section: "Manage",
-    items: [{ id: "networks", label: "Networks", icon: "globe" }],
+    id: "investigate",
+    section: "Investigate",
+    items: [
+      { id: "alerts", label: "Incident review", icon: "alerts" },
+      { id: "search", label: "Search", icon: "search" },
+      { id: "devices", label: "Devices", icon: "devices" },
+      { id: "map", label: "Network map", icon: "map" },
+      { id: "feed", label: "Live feed", icon: "activity" },
+    ],
   },
   {
-    section: "Configure",
+    id: "posture",
+    section: "Security posture",
     items: [
-      { id: "capture", label: "Capture setup", icon: "settings" },
-      { id: "rules", label: "Rules & data", icon: "sliders" },
+      { id: "compliance", label: "Compliance", icon: "clipboard" },
+      { id: "intel", label: "Threat intel", icon: "crosshair" },
+    ],
+  },
+  {
+    id: "settings",
+    section: "Settings",
+    items: [
+      { id: "capture", label: "Capture & adapters", icon: "radar" },
+      { id: "networks", label: "Networks", icon: "globe" },
+      { id: "rules", label: "Detection rules", icon: "sliders" },
+      { id: "detections", label: "Custom detections", icon: "shield" },
+      { id: "automation", label: "Automation", icon: "bolt" },
     ],
   },
 ];
+
+function useStored<T>(key: string, initial: T): [T, (v: T) => void] {
+  const [v, setV] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? (JSON.parse(raw) as T) : initial;
+    } catch {
+      return initial;
+    }
+  });
+  const set = useCallback(
+    (nv: T) => {
+      setV(nv);
+      try {
+        localStorage.setItem(key, JSON.stringify(nv));
+      } catch {
+        /* per-viewer convenience only */
+      }
+    },
+    [key],
+  );
+  return [v, set];
+}
+
 const ALL_PAGES = NAV.flatMap((s) => s.items);
 const isMac = navigator.userAgent.includes("Mac");
 
@@ -53,6 +117,8 @@ function Shell() {
   const [toasts, setToasts] = useState<Alert[]>([]);
   const [palette, setPalette] = useState(false);
   const [deviceName, setDeviceName] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useStored<string[]>("niv.navCollapsed", []);
+  const [rail, setRail] = useStored<boolean>("niv.navRail", false);
 
   // Pop high/critical alerts as toasts.
   useEffect(() => {
@@ -68,14 +134,26 @@ function Shell() {
     };
   }, []);
 
-  // Keyboard: ⌘/Ctrl+K palette, ⌘/Ctrl+1..6 pages, Esc back from device.
+  // Custom detections run every minute while the app is open.
+  useEffect(() => {
+    if (!inTauri) return;
+    const tick = () => runAllDetections().catch(console.error);
+    const first = setTimeout(tick, 10_000);
+    const id = setInterval(tick, 60_000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(id);
+    };
+  }, []);
+
+  // Keyboard: ⌘/Ctrl+K palette, ⌘/Ctrl+1..9 pages, Esc back from device.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac ? e.metaKey : e.ctrlKey;
       if (mod && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPalette((p) => !p);
-      } else if (mod && /^[1-7]$/.test(e.key)) {
+      } else if (mod && /^[1-9]$/.test(e.key) && ALL_PAGES[Number(e.key) - 1]) {
         e.preventDefault();
         nav.go(ALL_PAGES[Number(e.key) - 1].id);
       } else if (e.key === "Escape" && route.device && !palette && !(e.target instanceof HTMLInputElement)) {
@@ -113,7 +191,7 @@ function Shell() {
   const current = ALL_PAGES.find((p) => p.id === route.page)!;
 
   return (
-    <div className="app">
+    <div className={`app ${rail ? "rail" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
           <LogoMark size={30} />
@@ -122,29 +200,47 @@ function Shell() {
             <div className="brand-sub">Network &amp; IoT monitor</div>
           </div>
         </div>
-        <button className="btn ghost" style={{ justifyContent: "flex-start", border: "1px solid var(--border)", marginBottom: 6 }}
-          onClick={() => setPalette(true)}>
+        <button className="btn ghost quick-search" onClick={() => setPalette(true)} title={`Jump to anything (${isMac ? "⌘" : "Ctrl+"}K)`}>
           <Icon name="search" size={14} />
-          <span className="muted">Search…</span>
-          <kbd style={{ marginLeft: "auto" }}>{isMac ? "⌘" : "Ctrl"} K</kbd>
+          <span className="muted nav-label">Jump to…</span>
+          <kbd className="nav-label" style={{ marginLeft: "auto" }}>{isMac ? "⌘" : "Ctrl"} K</kbd>
         </button>
-        {NAV.map((sec) => (
-          <div key={sec.section}>
-            <div className="nav-section">{sec.section}</div>
-            {sec.items.map((n) => (
-              <button key={n.id} className={`nav-item ${route.page === n.id ? "active" : ""}`} onClick={() => nav.go(n.id)}>
-                <Icon name={n.icon} />
-                {n.label}
-                {n.id === "alerts" && (status?.alerts.open ?? 0) > 0 && <span className="count">{status!.alerts.open}</span>}
-                {n.id === "devices" && status && <span className="meta">{status.devices}</span>}
-                {n.id === "feed" && running && <span className="dot live" style={{ marginLeft: "auto" }} />}
-              </button>
-            ))}
-          </div>
-        ))}
+        <nav aria-label="Main">
+          {NAV.map((sec) => {
+            const isCollapsed = !!sec.section && collapsed.includes(sec.id) && !sec.items.some((n) => n.id === route.page);
+            return (
+              <div key={sec.id} className="nav-group">
+                {sec.section && (
+                  <button className="nav-section" aria-expanded={!isCollapsed}
+                    onClick={() => setCollapsed(collapsed.includes(sec.id) ? collapsed.filter((x) => x !== sec.id) : [...collapsed, sec.id])}>
+                    <span>{sec.section}</span>
+                    <Icon name={isCollapsed ? "chevron" : "down"} size={12} />
+                  </button>
+                )}
+                {!isCollapsed && sec.items.map((n) => {
+                  const idx = ALL_PAGES.findIndex((p) => p.id === n.id);
+                  return (
+                    <button key={n.id} className={`nav-item ${route.page === n.id ? "active" : ""}`} onClick={() => nav.go(n.id)}
+                      title={`${n.label}${idx < 9 ? ` (${isMac ? "⌘" : "Ctrl+"}${idx + 1})` : ""}`} aria-current={route.page === n.id ? "page" : undefined}>
+                      <Icon name={n.icon} />
+                      <span className="nav-label">{n.label}</span>
+                      {n.id === "alerts" && (status?.alerts.open ?? 0) > 0 && <span className="count">{status!.alerts.open}</span>}
+                      {n.id === "devices" && status && <span className="meta">{status.devices}</span>}
+                      {n.id === "feed" && running && <span className="dot live" style={{ marginLeft: "auto" }} />}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </nav>
         <UpdateNotice />
         <div className="sidebar-foot">
-          Only monitor networks you own or are explicitly authorized to test.
+          <p className="sidebar-note">Only monitor networks you own or are explicitly authorized to test.</p>
+          <button className="nav-item rail-toggle" onClick={() => setRail(!rail)} title={rail ? "Expand sidebar" : "Collapse sidebar"}>
+            <Icon name={rail ? "chevron" : "back"} size={14} />
+            <span className="nav-label">Collapse</span>
+          </button>
         </div>
       </aside>
 
@@ -198,6 +294,7 @@ function Shell() {
                 <button className="btn sm ghost" onClick={() => setNote(null)}><Icon name="x" size={12} /></button>
               </div>
             )}
+            <ErrorBoundary resetKey={`${route.page}:${route.device ?? ""}`}>
             {route.device ? (
               <DeviceDetail key={route.device} mac={route.device} onName={setDeviceName} />
             ) : route.page === "overview" ? (
@@ -206,6 +303,20 @@ function Shell() {
               <Devices onMessage={flash} />
             ) : route.page === "feed" ? (
               <LiveFeed />
+            ) : route.page === "search" ? (
+              <Search onMessage={flash} />
+            ) : route.page === "map" ? (
+              <NetworkMap />
+            ) : route.page === "compliance" ? (
+              <Compliance />
+            ) : route.page === "intel" ? (
+              <ThreatIntel onMessage={flash} />
+            ) : route.page === "automation" ? (
+              <Automation onMessage={flash} />
+            ) : route.page === "dashboards" ? (
+              <Dashboards onMessage={flash} />
+            ) : route.page === "detections" ? (
+              <Detections onMessage={flash} />
             ) : route.page === "alerts" ? (
               <Alerts />
             ) : route.page === "networks" ? (
@@ -215,6 +326,7 @@ function Shell() {
             ) : (
               <Rules onMessage={flash} />
             )}
+            </ErrorBoundary>
           </div>
         </div>
       </main>

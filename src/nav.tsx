@@ -1,6 +1,20 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 
-export type Page = "overview" | "devices" | "feed" | "alerts" | "networks" | "capture" | "rules";
+export type Page =
+  | "overview"
+  | "dashboards"
+  | "map"
+  | "devices"
+  | "feed"
+  | "search"
+  | "alerts"
+  | "compliance"
+  | "networks"
+  | "intel"
+  | "capture"
+  | "rules"
+  | "detections"
+  | "automation";
 export interface Route {
   page: Page;
   device?: string;

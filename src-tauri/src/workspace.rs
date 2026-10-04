@@ -7,6 +7,7 @@
 //! it starts empty on every simulator run and is never written to disk.
 
 use crate::engine::{Alert, Device, Engine};
+use crate::model::Mac;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -38,6 +39,9 @@ pub struct NetworkRecord {
     pub subnet: Option<String>,
     pub gateway_mac: Option<String>,
     pub ssid: Option<String>,
+    /// LAN subnets learned on this network (incl. global IPv6 prefixes).
+    #[serde(default)]
+    pub lan_nets: Vec<crate::model::IpNet>,
     #[serde(default)]
     pub devices: Vec<Device>,
     #[serde(default)]
@@ -86,8 +90,11 @@ pub struct NetworkStore {
 impl NetworkStore {
     /// Copy the engine's live data into the current record.
     pub fn snapshot(&mut self, eng: &Engine) {
-        let Some(id) = self.current.clone() else { return };
+        let Some(id) = self.current.clone() else {
+            return;
+        };
         if let Some(r) = self.records.get_mut(&id) {
+            remember_router(r, eng);
             r.devices = eng.devices.values().cloned().collect();
             r.alerts = eng.alerts.iter().rev().take(500).rev().cloned().collect();
             r.next_alert_id = eng.next_alert_id;
@@ -102,21 +109,25 @@ impl NetworkStore {
         if fresh {
             self.records.remove(&meta.id);
         }
-        let rec = self.records.entry(meta.id.clone()).or_insert_with(|| NetworkRecord {
-            id: meta.id.clone(),
-            name: meta.name.clone(),
-            custom_name: false,
-            kind: meta.kind.clone(),
-            created: now,
-            last_used: now,
-            interface: None,
-            subnet: None,
-            gateway_mac: None,
-            ssid: None,
-            devices: vec![],
-            alerts: vec![],
-            next_alert_id: 1,
-        });
+        let rec = self
+            .records
+            .entry(meta.id.clone())
+            .or_insert_with(|| NetworkRecord {
+                id: meta.id.clone(),
+                name: meta.name.clone(),
+                custom_name: false,
+                kind: meta.kind.clone(),
+                created: now,
+                last_used: now,
+                interface: None,
+                subnet: None,
+                gateway_mac: None,
+                ssid: None,
+                lan_nets: vec![],
+                devices: vec![],
+                alerts: vec![],
+                next_alert_id: 1,
+            });
         rec.last_used = now;
         if !rec.custom_name {
             rec.name = meta.name;
@@ -127,6 +138,17 @@ impl NetworkStore {
         rec.ssid = meta.ssid.or(rec.ssid.take());
 
         eng.clear_all();
+        eng.gateway_macs.clear();
+        eng.gateway_macs.extend(
+            rec.gateway_mac
+                .as_deref()
+                .and_then(|m| m.parse::<Mac>().ok()),
+        );
+        for n in &rec.lan_nets {
+            if !eng.lan_nets.contains(n) {
+                eng.lan_nets.push(*n);
+            }
+        }
         eng.restore(rec.devices.clone(), rec.alerts.clone(), rec.next_alert_id);
         eng.dirty = false;
         self.current = Some(meta.id);
@@ -136,9 +158,18 @@ impl NetworkStore {
     pub fn activate_latest(&mut self, eng: &mut Engine) {
         eng.clear_all();
         self.current = None;
-        let latest = self.records.values().filter(|r| r.kind != NetKind::Demo).max_by_key(|r| r.last_used).map(|r| r.id.clone());
+        let latest = self
+            .records
+            .values()
+            .filter(|r| r.kind != NetKind::Demo)
+            .max_by_key(|r| r.last_used)
+            .map(|r| r.id.clone());
+        eng.gateway_macs.clear();
         if let Some(id) = latest {
             let r = &self.records[&id];
+            eng.gateway_macs
+                .extend(r.gateway_mac.as_deref().and_then(|m| m.parse::<Mac>().ok()));
+            eng.lan_nets = r.lan_nets.clone();
             eng.restore(r.devices.clone(), r.alerts.clone(), r.next_alert_id);
             self.current = Some(id);
         }
@@ -152,9 +183,15 @@ impl NetworkStore {
             .map(|r| {
                 let current = self.current.as_deref() == Some(&r.id);
                 let (devices, open_alerts) = if current {
-                    (eng.devices.len(), eng.alerts.iter().filter(|a| !a.acknowledged).count())
+                    (
+                        eng.devices.len(),
+                        eng.alerts.iter().filter(|a| !a.acknowledged).count(),
+                    )
                 } else {
-                    (r.devices.len(), r.alerts.iter().filter(|a| !a.acknowledged).count())
+                    (
+                        r.devices.len(),
+                        r.alerts.iter().filter(|a| !a.acknowledged).count(),
+                    )
                 };
                 NetworkSummary {
                     id: r.id.clone(),
@@ -178,13 +215,17 @@ impl NetworkStore {
 
     /// Everything that should be written to disk (demo excluded).
     pub fn persistable(&self, eng: &Engine) -> NetworkStore {
-        let mut out = NetworkStore { current: None, records: BTreeMap::new() };
+        let mut out = NetworkStore {
+            current: None,
+            records: BTreeMap::new(),
+        };
         for (id, r) in &self.records {
             if r.kind == NetKind::Demo {
                 continue;
             }
             let mut r = r.clone();
             if self.current.as_deref() == Some(id) {
+                remember_router(&mut r, eng);
                 r.devices = eng.devices.values().cloned().collect();
                 r.alerts = eng.alerts.iter().rev().take(500).rev().cloned().collect();
                 r.next_alert_id = eng.next_alert_id;
@@ -200,20 +241,35 @@ impl NetworkStore {
     /// joining an existing workspace for that router if there is one.
     /// Returns true when the active workspace changed.
     pub fn adopt_gateway_mac(&mut self, eng: &mut Engine) -> bool {
-        let Some(cur) = self.current.clone() else { return false };
-        let Some(rec) = self.records.get(&cur) else { return false };
+        let Some(cur) = self.current.clone() else {
+            return false;
+        };
+        let Some(rec) = self.records.get(&cur) else {
+            return false;
+        };
         if rec.kind != NetKind::Live || rec.gateway_mac.is_some() {
             return false;
         }
-        let Some(gw_ip) = eng.gateway_ip else { return false };
-        let Some(mac) = eng.devices.values().find(|d| d.is_gateway && d.ips.contains(&gw_ip)).map(|d| d.mac.to_string()) else {
+        let Some(gw_ip) = eng.gateway_ip else {
+            return false;
+        };
+        let Some(mac) = eng
+            .devices
+            .values()
+            .find(|d| d.is_gateway && d.ips.contains(&gw_ip))
+            .map(|d| d.mac.to_string())
+        else {
             return false;
         };
         let new_id = format!("net:{mac}");
         if self.records.contains_key(&new_id) {
             // Known router: merge what was seen so far into that workspace.
             self.snapshot(eng);
-            let seen = self.records.remove(&cur).map(|r| r.devices).unwrap_or_default();
+            let seen = self
+                .records
+                .remove(&cur)
+                .map(|r| r.devices)
+                .unwrap_or_default();
             let target = self.records.get_mut(&new_id).expect("checked");
             for d in seen {
                 if !target.devices.iter().any(|x| x.mac == d.mac) {
@@ -221,8 +277,17 @@ impl NetworkStore {
                 }
             }
             target.last_used = Utc::now();
-            let (devs, alerts, next) = (target.devices.clone(), target.alerts.clone(), target.next_alert_id);
-            let (gw, ips, macs, host) = (eng.gateway_ip, eng.self_ips.clone(), eng.self_macs.clone(), eng.self_hostname.clone());
+            let (devs, alerts, next) = (
+                target.devices.clone(),
+                target.alerts.clone(),
+                target.next_alert_id,
+            );
+            let (gw, ips, macs, host) = (
+                eng.gateway_ip,
+                eng.self_ips.clone(),
+                eng.self_macs.clone(),
+                eng.self_hostname.clone(),
+            );
             eng.clear_all();
             eng.restore(devs, alerts, next);
             eng.gateway_ip = gw;
@@ -245,6 +310,19 @@ impl NetworkStore {
     }
 }
 
+/// Keep the router's MAC once it was identified with certainty (ARP for the
+/// gateway IP, DHCP, router advertisement), so saved networks show it.
+fn remember_router(r: &mut NetworkRecord, eng: &Engine) {
+    for n in &eng.lan_nets {
+        if !r.lan_nets.contains(n) && r.lan_nets.len() < 32 {
+            r.lan_nets.push(*n);
+        }
+    }
+    if r.gateway_mac.is_none() && r.kind == NetKind::Live && eng.gateway_macs.len() == 1 {
+        r.gateway_mac = eng.gateway_macs.iter().next().map(|m| m.to_string());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,7 +331,15 @@ mod tests {
     use crate::settings::RuleSettings;
 
     fn meta(id: &str, kind: NetKind) -> NetMeta {
-        NetMeta { id: id.into(), name: id.into(), kind, interface: None, subnet: None, gateway_mac: None, ssid: None }
+        NetMeta {
+            id: id.into(),
+            name: id.into(),
+            kind,
+            interface: None,
+            subnet: None,
+            gateway_mac: None,
+            ssid: None,
+        }
     }
 
     fn see(eng: &mut Engine, mac: &str) {
@@ -278,15 +364,26 @@ mod tests {
 
         store.activate(&mut eng, meta("net:home", NetKind::Live), false);
         assert_eq!(eng.devices.len(), 1);
-        assert!(eng.devices.contains_key(&"02:00:00:00:00:01".parse().unwrap()));
+        assert!(eng
+            .devices
+            .contains_key(&"02:00:00:00:00:01".parse().unwrap()));
 
         // Cold ARP cache: workspace keyed by subnet until the router is seen.
-        store.activate(&mut eng, meta("net:10.0.0.0/24@10.0.0.1", NetKind::Live), false);
+        store.activate(
+            &mut eng,
+            meta("net:10.0.0.0/24@10.0.0.1", NetKind::Live),
+            false,
+        );
         eng.gateway_ip = Some("10.0.0.1".parse().unwrap());
         let mut arp = PacketInfo::new(Utc::now(), FrameKind::Ethernet, "arp", 60);
         let gw: crate::model::Mac = "94:83:c4:be:eb:ac".parse().unwrap();
         arp.src = Some(gw);
-        arp.arp = Some(crate::model::ArpInfo { sender_mac: gw, sender_ip: "10.0.0.1".parse().unwrap(), target_ip: "10.0.0.5".parse().unwrap(), reply: true });
+        arp.arp = Some(crate::model::ArpInfo {
+            sender_mac: gw,
+            sender_ip: "10.0.0.1".parse().unwrap(),
+            target_ip: "10.0.0.5".parse().unwrap(),
+            reply: true,
+        });
         eng.process(&arp);
         assert!(store.adopt_gateway_mac(&mut eng));
         assert_eq!(store.current.as_deref(), Some("net:94:83:c4:be:eb:ac"));

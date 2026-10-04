@@ -8,7 +8,7 @@
 //! From there we walk LLC/SNAP -> IPv4/IPv6 -> TCP/UDP and pull out DNS
 //! names and TLS SNI, which is what the behavioral baseline is built on.
 
-use crate::model::{ArpInfo, FrameKind, Hint, Mac, NetInfo, PacketInfo, Transport};
+use crate::model::{ArpInfo, FrameKind, Hint, Mac, NetInfo, PacketInfo, RouterAdv, Transport};
 use chrono::{DateTime, Utc};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -18,7 +18,10 @@ pub const DLT_LINUX_SLL: i32 = 113;
 pub const DLT_IEEE802_11_RADIO: i32 = 127;
 
 pub fn supported_linktype(lt: i32) -> bool {
-    matches!(lt, DLT_EN10MB | DLT_IEEE802_11 | DLT_LINUX_SLL | DLT_IEEE802_11_RADIO)
+    matches!(
+        lt,
+        DLT_EN10MB | DLT_IEEE802_11 | DLT_LINUX_SLL | DLT_IEEE802_11_RADIO
+    )
 }
 
 pub fn linktype_name(lt: i32) -> &'static str {
@@ -89,7 +92,10 @@ pub fn parse_radiotap(d: &[u8]) -> Option<Radiotap> {
         off += 4;
     }
 
-    let mut rt = Radiotap { header_len, ..Default::default() };
+    let mut rt = Radiotap {
+        header_len,
+        ..Default::default()
+    };
     // (bit, alignment, size) for fields 0..=5
     const FIELDS: [(u32, usize, usize); 6] = [
         (0, 8, 8), // TSFT
@@ -358,7 +364,11 @@ pub fn parse_l3(ethertype: u16, d: &[u8]) -> Option<NetInfo> {
             let frag_off = u16::from_be_bytes([d[6], d[7]]) & 0x1fff;
             let src = IpAddr::V4(Ipv4Addr::new(d[12], d[13], d[14], d[15]));
             let dst = IpAddr::V4(Ipv4Addr::new(d[16], d[17], d[18], d[19]));
-            let l4 = if frag_off == 0 { d.get(ihl..total).unwrap_or(&[]) } else { &[][..] };
+            let l4 = if frag_off == 0 {
+                d.get(ihl..total).unwrap_or(&[])
+            } else {
+                &[][..]
+            };
             (src, dst, d[9], l4)
         }
         0x86dd => {
@@ -367,7 +377,12 @@ pub fn parse_l3(ethertype: u16, d: &[u8]) -> Option<NetInfo> {
             }
             let s: [u8; 16] = d[8..24].try_into().ok()?;
             let t: [u8; 16] = d[24..40].try_into().ok()?;
-            (IpAddr::V6(Ipv6Addr::from(s)), IpAddr::V6(Ipv6Addr::from(t)), d[6], &d[40..])
+            (
+                IpAddr::V6(Ipv6Addr::from(s)),
+                IpAddr::V6(Ipv6Addr::from(t)),
+                d[6],
+                &d[40..],
+            )
         }
         _ => return None,
     };
@@ -383,6 +398,12 @@ pub fn parse_l3(ethertype: u16, d: &[u8]) -> Option<NetInfo> {
         dns_answers: vec![],
         sni: None,
         hints: vec![],
+        routers: vec![],
+        router_adv: None,
+        tls: None,
+        dns_response: false,
+        dns_rcode: 0,
+        payload: vec![],
     };
 
     match proto {
@@ -395,8 +416,10 @@ pub fn parse_l3(ethertype: u16, d: &[u8]) -> Option<NetInfo> {
             let doff = ((l4[12] >> 4) as usize) * 4;
             if let Some(payload) = l4.get(doff..) {
                 if !payload.is_empty() {
-                    n.sni = parse_tls_sni(payload);
-                    if n.sni.is_none() {
+                    n.payload = payload[..payload.len().min(PAYLOAD_KEEP)].to_vec();
+                    n.tls = crate::fingerprint::client_hello(payload);
+                    n.sni = n.tls.as_ref().and_then(|t| t.sni.clone());
+                    if n.tls.is_none() {
                         if let Some(ua) = parse_http_ua(payload) {
                             n.hints.push(Hint::UserAgent(ua));
                         }
@@ -411,20 +434,31 @@ pub fn parse_l3(ethertype: u16, d: &[u8]) -> Option<NetInfo> {
             n.src_port = Some(sp);
             n.dst_port = Some(dp);
             let payload = &l4[8..];
+            n.payload = payload[..payload.len().min(PAYLOAD_KEEP)].to_vec();
             if sp == 53 || dp == 53 {
+                if payload.len() >= 4 {
+                    n.dns_response = payload[2] & 0x80 != 0;
+                    n.dns_rcode = payload[3] & 0x0f;
+                }
                 if let Some((q, answers)) = parse_dns(payload) {
                     n.dns_query = Some(q);
                     n.dns_answers = answers;
                 }
-            } else if (sp == 68 && dp == 67) || (sp == 67 && dp == 68) {
+            } else if sp == 68 && dp == 67 {
                 n.hints = parse_dhcp(payload);
+            } else if sp == 67 && dp == 68 {
+                n.routers = parse_dhcp_routers(payload);
             } else if sp == 5353 {
                 n.hints = parse_mdns(payload, &src);
             } else if sp == 1900 || dp == 1900 {
                 n.hints = parse_ssdp(payload);
             }
         }
-        1 | 58 => n.transport = Transport::Icmp,
+        58 => {
+            n.transport = Transport::Icmp;
+            n.router_adv = parse_router_adv(l4);
+        }
+        1 => n.transport = Transport::Icmp,
         6 => n.transport = Transport::Tcp,
         17 => n.transport = Transport::Udp,
         _ => {}
@@ -464,7 +498,11 @@ fn dns_name_case(msg: &[u8], mut off: usize, lower: bool) -> Option<(String, usi
         }
         let label = msg.get(off + 1..off + 1 + len)?;
         let l = String::from_utf8_lossy(label);
-        labels.push(if lower { l.to_ascii_lowercase() } else { l.into_owned() });
+        labels.push(if lower {
+            l.to_ascii_lowercase()
+        } else {
+            l.into_owned()
+        });
         off += 1 + len;
     }
     Some((labels.join("."), end.unwrap_or(off)))
@@ -492,11 +530,17 @@ pub fn parse_dns(msg: &[u8]) -> Option<(String, Vec<(String, IpAddr)>)> {
     let mut answers = Vec::new();
     if is_response {
         for _ in 0..an.min(64) {
-            let Some((_, next)) = dns_name(msg, off) else { break };
-            let Some(rr) = msg.get(next..next + 10) else { break };
+            let Some((_, next)) = dns_name(msg, off) else {
+                break;
+            };
+            let Some(rr) = msg.get(next..next + 10) else {
+                break;
+            };
             let rtype = u16::from_be_bytes([rr[0], rr[1]]);
             let rdlen = u16::from_be_bytes([rr[8], rr[9]]) as usize;
-            let Some(rdata) = msg.get(next + 10..next + 10 + rdlen) else { break };
+            let Some(rdata) = msg.get(next + 10..next + 10 + rdlen) else {
+                break;
+            };
             match (rtype, rdlen) {
                 (1, 4) => answers.push((
                     qname.clone(),
@@ -521,39 +565,8 @@ pub fn parse_dns(msg: &[u8]) -> Option<(String, Vec<(String, IpAddr)>)> {
 // TLS ClientHello SNI
 // ---------------------------------------------------------------------------
 
-pub fn parse_tls_sni(d: &[u8]) -> Option<String> {
-    // TLS record: handshake(0x16), version, length
-    if d.len() < 43 || d[0] != 0x16 || d[1] != 0x03 {
-        return None;
-    }
-    let hs = &d[5..];
-    if hs[0] != 0x01 {
-        return None; // not ClientHello
-    }
-    let mut off = 4 + 2 + 32; // handshake header + client_version + random
-    let sid_len = *hs.get(off)? as usize;
-    off += 1 + sid_len;
-    let cs_len = u16::from_be_bytes([*hs.get(off)?, *hs.get(off + 1)?]) as usize;
-    off += 2 + cs_len;
-    let comp_len = *hs.get(off)? as usize;
-    off += 1 + comp_len;
-    let ext_total = u16::from_be_bytes([*hs.get(off)?, *hs.get(off + 1)?]) as usize;
-    off += 2;
-    let ext_end = (off + ext_total).min(hs.len());
-    while off + 4 <= ext_end {
-        let etype = u16::from_be_bytes([hs[off], hs[off + 1]]);
-        let elen = u16::from_be_bytes([hs[off + 2], hs[off + 3]]) as usize;
-        off += 4;
-        if etype == 0 {
-            // server_name_list: len(2) type(1) name_len(2) name
-            let name_len = u16::from_be_bytes([*hs.get(off + 3)?, *hs.get(off + 4)?]) as usize;
-            let name = hs.get(off + 5..off + 5 + name_len)?;
-            return Some(String::from_utf8_lossy(name).to_ascii_lowercase());
-        }
-        off += elen;
-    }
-    None
-}
+/// Bytes of L4 payload kept per packet for signature matching.
+pub const PAYLOAD_KEEP: usize = 1024;
 
 // ---------------------------------------------------------------------------
 // LAN discovery protocols: ARP, DHCP, mDNS, SSDP, HTTP
@@ -561,7 +574,13 @@ pub fn parse_tls_sni(d: &[u8]) -> Option<String> {
 
 pub fn parse_arp(ethertype: u16, d: &[u8]) -> Option<ArpInfo> {
     // Ethernet/IPv4 ARP only: htype 1, ptype 0x0800, hlen 6, plen 4
-    if ethertype != 0x0806 || d.len() < 28 || d[0..2] != [0, 1] || d[2..4] != [8, 0] || d[4] != 6 || d[5] != 4 {
+    if ethertype != 0x0806
+        || d.len() < 28
+        || d[0..2] != [0, 1]
+        || d[2..4] != [8, 0]
+        || d[4] != 6
+        || d[5] != 4
+    {
         return None;
     }
     let op = u16::from_be_bytes([d[6], d[7]]);
@@ -571,11 +590,19 @@ pub fn parse_arp(ethertype: u16, d: &[u8]) -> Option<ArpInfo> {
     if !sender_mac.is_unicast() || sender_ip.is_unspecified() {
         return None;
     }
-    Some(ArpInfo { sender_mac, sender_ip, target_ip, reply: op == 2 })
+    Some(ArpInfo {
+        sender_mac,
+        sender_ip,
+        target_ip,
+        reply: op == 2,
+    })
 }
 
 fn clean(s: &[u8]) -> Option<String> {
-    let t: String = String::from_utf8_lossy(s).chars().filter(|c| !c.is_control()).collect();
+    let t: String = String::from_utf8_lossy(s)
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
     let t = t.trim();
     (!t.is_empty()).then(|| t.chars().take(160).collect())
 }
@@ -598,15 +625,80 @@ pub fn parse_dhcp(d: &[u8]) -> Vec<Hint> {
             continue;
         }
         let len = d[i + 1] as usize;
-        let Some(val) = d.get(i + 2..i + 2 + len) else { break };
+        let Some(val) = d.get(i + 2..i + 2 + len) else {
+            break;
+        };
         match code {
             12 => out.extend(clean(val).map(Hint::Hostname)),
             60 => out.extend(clean(val).map(Hint::VendorClass)),
+            55 if !val.is_empty() => out.push(Hint::DhcpParams(
+                val.iter().map(u8::to_string).collect::<Vec<_>>().join(","),
+            )),
             _ => {}
         }
         i += 2 + len;
     }
     out
+}
+
+/// DHCP server replies (OFFER/ACK) carry the default router (option 3).
+pub fn parse_dhcp_routers(d: &[u8]) -> Vec<IpAddr> {
+    let mut out = vec![];
+    // op=2 BOOTREPLY, magic cookie at 236
+    if d.len() < 240 || d[0] != 2 || d[236..240] != [99, 130, 83, 99] {
+        return out;
+    }
+    let mut i = 240;
+    while i + 1 < d.len() {
+        let code = d[i];
+        if code == 255 {
+            break;
+        }
+        if code == 0 {
+            i += 1;
+            continue;
+        }
+        let len = d[i + 1] as usize;
+        let Some(val) = d.get(i + 2..i + 2 + len) else {
+            break;
+        };
+        if code == 3 {
+            out.extend(
+                val.chunks_exact(4)
+                    .map(|c| Ipv4Addr::new(c[0], c[1], c[2], c[3]))
+                    .filter(|ip| !ip.is_unspecified() && !ip.is_broadcast())
+                    .map(IpAddr::V4),
+            );
+        }
+        i += 2 + len;
+    }
+    out
+}
+
+/// ICMPv6 Router Advertisement (type 134): router lifetime + on-link prefixes.
+pub fn parse_router_adv(icmp: &[u8]) -> Option<RouterAdv> {
+    if icmp.len() < 16 || icmp[0] != 134 || icmp[1] != 0 {
+        return None;
+    }
+    let lifetime = u16::from_be_bytes([icmp[6], icmp[7]]);
+    let mut prefixes = vec![];
+    let mut opts = &icmp[16..];
+    while opts.len() >= 8 {
+        let (ty, len) = (opts[0], opts[1] as usize * 8);
+        if len == 0 || len > opts.len() {
+            break;
+        }
+        // Prefix Information: type 3, length 4 (32 bytes); prefix length at +2, prefix at +16.
+        if ty == 3 && len == 32 {
+            let plen = opts[2];
+            let raw: [u8; 16] = opts[16..32].try_into().ok()?;
+            if plen <= 128 {
+                prefixes.push((Ipv6Addr::from(raw), plen));
+            }
+        }
+        opts = &opts[len..];
+    }
+    Some(RouterAdv { lifetime, prefixes })
 }
 
 /// Walk every resource record in a DNS message: (name, type, rdata offset, rdlen).
@@ -619,12 +711,18 @@ fn dns_records(msg: &[u8]) -> Vec<(String, u16, usize, usize)> {
     let (qd, rr) = (count(4), count(6) + count(8) + count(10));
     let mut off = 12;
     for _ in 0..qd.min(32) {
-        let Some((_, next)) = dns_name(msg, off) else { return out };
+        let Some((_, next)) = dns_name(msg, off) else {
+            return out;
+        };
         off = next + 4;
     }
     for _ in 0..rr.min(64) {
-        let Some((name, next)) = dns_name(msg, off) else { break };
-        let Some(h) = msg.get(next..next + 10) else { break };
+        let Some((name, next)) = dns_name(msg, off) else {
+            break;
+        };
+        let Some(h) = msg.get(next..next + 10) else {
+            break;
+        };
         let rtype = u16::from_be_bytes([h[0], h[1]]);
         let rdlen = u16::from_be_bytes([h[8], h[9]]) as usize;
         if next + 10 + rdlen > msg.len() {
@@ -673,7 +771,10 @@ pub fn parse_mdns(msg: &[u8], src: &IpAddr) -> Vec<Hint> {
                     if let Some((inst, _)) = dns_name_case(msg, rd, false) {
                         if let Some(i) = inst.find("._") {
                             let friendly = &inst[..i];
-                            if !friendly.is_empty() && friendly.len() < 64 && !friendly.contains('@') {
+                            if !friendly.is_empty()
+                                && friendly.len() < 64
+                                && !friendly.contains('@')
+                            {
                                 push(Hint::Hostname(friendly.to_string()));
                             }
                         }
@@ -689,19 +790,28 @@ pub fn parse_mdns(msg: &[u8], src: &IpAddr) -> Vec<Hint> {
 fn header_value(text: &str, header: &str) -> Option<String> {
     text.lines().find_map(|l| {
         let (k, v) = l.split_once(':')?;
-        k.trim().eq_ignore_ascii_case(header).then(|| v.trim().to_string()).filter(|v| !v.is_empty())
+        k.trim()
+            .eq_ignore_ascii_case(header)
+            .then(|| v.trim().to_string())
+            .filter(|v| !v.is_empty())
     })
 }
 
 /// SSDP NOTIFY / M-SEARCH responses carry `SERVER: OS/ver UPnP/1.0 Product/ver`.
 pub fn parse_ssdp(d: &[u8]) -> Vec<Hint> {
     let text = String::from_utf8_lossy(&d[..d.len().min(1500)]);
-    header_value(&text, "server").and_then(|v| clean(v.as_bytes())).map(Hint::Server).into_iter().collect()
+    header_value(&text, "server")
+        .and_then(|v| clean(v.as_bytes()))
+        .map(Hint::Server)
+        .into_iter()
+        .collect()
 }
 
 pub fn parse_http_ua(d: &[u8]) -> Option<String> {
     let head = &d[..d.len().min(2048)];
-    let is_req = [&b"GET "[..], b"POST ", b"PUT ", b"HEAD "].iter().any(|m| head.starts_with(m));
+    let is_req = [&b"GET "[..], b"POST ", b"PUT ", b"HEAD "]
+        .iter()
+        .any(|m| head.starts_with(m));
     if !is_req {
         return None;
     }
@@ -718,7 +828,20 @@ pub mod tests {
 
     pub fn ipv4_udp(src: [u8; 4], dst: [u8; 4], sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
         let total = 20 + 8 + payload.len();
-        let mut v = vec![0x45, 0, (total >> 8) as u8, total as u8, 0, 0, 0, 0, 64, 17, 0, 0];
+        let mut v = vec![
+            0x45,
+            0,
+            (total >> 8) as u8,
+            total as u8,
+            0,
+            0,
+            0,
+            0,
+            64,
+            17,
+            0,
+            0,
+        ];
         v.extend_from_slice(&src);
         v.extend_from_slice(&dst);
         v.extend_from_slice(&sport.to_be_bytes());
@@ -765,7 +888,13 @@ pub mod tests {
         f.extend_from_slice(&gw);
         f.extend_from_slice(&[0, 0]);
         f.extend_from_slice(&[0xaa, 0xaa, 0x03, 0, 0, 0, 0x08, 0x00]);
-        f.extend_from_slice(&ipv4_udp([1, 1, 1, 1], [192, 168, 1, 20], 53, 40000, &dns_response()));
+        f.extend_from_slice(&ipv4_udp(
+            [1, 1, 1, 1],
+            [192, 168, 1, 20],
+            53,
+            40000,
+            &dns_response(),
+        ));
 
         let mut pkt = rt;
         pkt.extend_from_slice(&f);
@@ -778,13 +907,18 @@ pub mod tests {
         assert_eq!(p.bssid, Some(Mac(ap)));
         let n = p.net.unwrap();
         assert_eq!(n.dns_query.as_deref(), Some("cam.example.com"));
-        assert_eq!(n.dns_answers[0].1, "93.184.216.34".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            n.dns_answers[0].1,
+            "93.184.216.34".parse::<IpAddr>().unwrap()
+        );
     }
 
     #[test]
     fn arp_dhcp_mdns_ssdp() {
         // ARP reply 192.168.1.50 is-at 44:19:b6:...
-        let mut arp = vec![0, 1, 8, 0, 6, 4, 0, 2, 0x44, 0x19, 0xb6, 1, 2, 3, 192, 168, 1, 50];
+        let mut arp = vec![
+            0, 1, 8, 0, 6, 4, 0, 2, 0x44, 0x19, 0xb6, 1, 2, 3, 192, 168, 1, 50,
+        ];
         arp.extend_from_slice(&[0x02, 0, 0, 0, 0, 1, 192, 168, 1, 2]);
         let a = parse_arp(0x0806, &arp).unwrap();
         assert!(a.reply);
@@ -825,8 +959,43 @@ pub mod tests {
         assert!(h.contains(&Hint::Hostname("tv".into())));
 
         let s = parse_ssdp(b"NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nSERVER: Linux/3.14 UPnP/1.0 Sonos/70.3\r\n\r\n");
-        assert_eq!(s, vec![Hint::Server("Linux/3.14 UPnP/1.0 Sonos/70.3".into())]);
-        assert_eq!(parse_http_ua(b"GET / HTTP/1.1\r\nUser-Agent: Wyze/2.1\r\n\r\n").as_deref(), Some("Wyze/2.1"));
+        assert_eq!(
+            s,
+            vec![Hint::Server("Linux/3.14 UPnP/1.0 Sonos/70.3".into())]
+        );
+        assert_eq!(
+            parse_http_ua(b"GET / HTTP/1.1\r\nUser-Agent: Wyze/2.1\r\n\r\n").as_deref(),
+            Some("Wyze/2.1")
+        );
+    }
+
+    #[test]
+    fn dhcp_ack_router_and_ipv6_router_advertisement() {
+        let mut ack = vec![0u8; 240];
+        ack[0] = 2;
+        ack[236..240].copy_from_slice(&[99, 130, 83, 99]);
+        ack.extend_from_slice(&[53, 1, 5, 3, 4, 192, 168, 1, 1, 255]);
+        assert_eq!(
+            parse_dhcp_routers(&ack),
+            vec!["192.168.1.1".parse::<IpAddr>().unwrap()]
+        );
+        assert!(
+            parse_dhcp(&ack).is_empty(),
+            "server replies carry no client identity"
+        );
+
+        // RA: type 134, lifetime 1800, one prefix 2001:db8:1::/64
+        let mut ra = vec![134, 0, 0, 0, 64, 0, 0x07, 0x08, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut pio = vec![3, 4, 64, 0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        pio.extend_from_slice(&"2001:db8:1::".parse::<Ipv6Addr>().unwrap().octets());
+        ra.extend_from_slice(&pio);
+        let r = parse_router_adv(&ra).unwrap();
+        assert_eq!(r.lifetime, 1800);
+        assert_eq!(r.prefixes, vec![("2001:db8:1::".parse().unwrap(), 64)]);
+        assert!(
+            parse_router_adv(&[135, 0, 0, 0]).is_none(),
+            "neighbor solicitation is not an RA"
+        );
     }
 
     #[test]
@@ -866,10 +1035,33 @@ pub mod tests {
         let mut tls = vec![0x16, 0x03, 0x01, (hs.len() >> 8) as u8, hs.len() as u8];
         tls.extend_from_slice(&hs);
 
-        let mut tcp = vec![0x9c, 0x40, 0x01, 0xbb, 0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x18, 0xff, 0xff, 0, 0, 0, 0];
+        let mut tcp = vec![
+            0x9c, 0x40, 0x01, 0xbb, 0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x18, 0xff, 0xff, 0, 0, 0, 0,
+        ];
         tcp.extend_from_slice(&tls);
         let total = 20 + tcp.len();
-        let mut ip = vec![0x45, 0, (total >> 8) as u8, total as u8, 0, 0, 0x40, 0, 64, 6, 0, 0, 10, 0, 0, 5, 203, 0, 113, 9];
+        let mut ip = vec![
+            0x45,
+            0,
+            (total >> 8) as u8,
+            total as u8,
+            0,
+            0,
+            0x40,
+            0,
+            64,
+            6,
+            0,
+            0,
+            10,
+            0,
+            0,
+            5,
+            203,
+            0,
+            113,
+            9,
+        ];
         ip.extend_from_slice(&tcp);
         let mut eth = vec![0x02, 0, 0, 0, 0, 1, 0x44, 0x19, 0xb6, 1, 2, 3, 0x08, 0x00];
         eth.extend_from_slice(&ip);

@@ -1,5 +1,5 @@
 // Minimal inline stroke icon set (24px grid, rendered at any size).
-const paths: Record<string, string> = {
+export const ICON_PATHS: Record<string, string> = {
   dashboard: "M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z",
   devices: "M4 5h16v10H4zM2 19h20M9 15v4M15 15v4",
   alerts: "M12 3l9 16H3zM12 10v4M12 17.5v.5",
@@ -51,6 +51,12 @@ const paths: Record<string, string> = {
   home: "M3 11l9-8 9 8M5 9v12h14V9",
   question: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9.1 9a3 3 0 0 1 5.8 1c0 2-3 2.5-3 4.5M12 17.5v.5",
   user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0",
+  map: "M12 5a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM5 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM19 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM12 5v6M12 11l-6 6M12 11l6 6",
+  clipboard: "M9 4h6v3H9zM7 5H5v16h14V5h-2M9 12l2 2 4-4",
+  crosshair: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 3v4M12 17v4M3 12h4M17 12h4",
+  bolt: "M13 2L4 14h7l-1 8 9-12h-7z",
+  report: "M6 2h9l5 5v15H6zM14 2v6h6M9 13h6M9 17h6",
+  clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 3",
 };
 
 export function Icon({ name, size = 16, className }: { name: string; size?: number; className?: string }) {
@@ -67,7 +73,7 @@ export function Icon({ name, size = 16, className }: { name: string; size?: numb
       className={className}
       aria-hidden="true"
     >
-      <path d={paths[name] ?? paths.circle} />
+      <path d={ICON_PATHS[name] ?? ICON_PATHS.circle} />
     </svg>
   );
 }

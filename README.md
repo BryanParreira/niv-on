@@ -33,8 +33,12 @@ Niv.ON watches the network from the outside. It identifies every device it can s
 | is busy at 3 a.m. when it never is | **Activity at unusual times** |
 | floods the air with deauthentication frames | **Wi-Fi deauthentication flood** |
 | appears on the network for the first time | **New device** |
+| answers ARP for the router, or advertises itself as an IPv6 router | **ARP spoofing / rogue router** (man-in-the-middle) |
+| looks up long, random-looking domain names | **Suspicious (DGA) domain** |
+| contacts an IP, range or domain on your watchlist | **Threat intelligence match** |
+| trips several different detections at once | **Risk threshold exceeded** (correlated) |
 
-Every alert links to the device's full profile, and *Mark as normal* folds legitimate changes into its baseline.
+Every alert links to the device's full profile, is tagged with its **MITRE ATT&CK** technique, and *Mark as normal* folds legitimate changes into its baseline.
 
 ---
 
@@ -49,6 +53,28 @@ Every alert links to the device's full profile, and *Mark as normal* folds legit
 **Wireless visibility.** In monitor mode: signal strength (dBm), channel, frame types, SSIDs advertised and probed (the networks a phone remembers), access-point associations and deauth attacks.
 
 **One inventory per network.** Each network keeps its own devices, baselines and alerts. Niv.ON recognizes a network by its router and switches automatically when you capture on it, so moving between home, campus and a client site never mixes devices. Demo data is never saved and starts fresh on every simulator run; *Clear demo data* removes it in one click.
+
+**Risk-based alerting.** Like Splunk Enterprise Security, every open alert adds risk to its device — weighted by severity, higher for IoT and for devices you mark as high-priority assets, halving every 24 hours. Devices are ranked by risk, and one correlated critical alert fires when a device crosses the threshold from multiple detections, so analysts look at the few devices that matter instead of every individual event.
+
+**Search your data like Splunk.** The Search page speaks a subset of SPL over alerts, devices and the live feed: `index=alerts severity>=high | stats count, dc(device) by tactic, mitre` or `index=devices risk>0 | sort -risk | table label ip vendor risk`. Wildcards, comparisons, `NOT`, `OR`, relative time (`_time>-24h`), `stats`, `timechart`, `top`, `rare`, `sort`, `head`, `table`, `dedup`, `rename`, an event timeline, table / bar / line / single-value views, real-time refresh and saved searches.
+
+**Dashboards.** Any search can become a dashboard panel that refreshes every 10 seconds. One click builds a security-operations overview: open alerts, alerts over time, urgency, ATT&CK tactics, riskiest devices, live traffic by protocol and incidents in progress.
+
+**Custom detections.** Save any search as a detection (Splunk's correlation searches): it runs every minute and raises an alert for each device it returns, throttled per device. Starter detections cover critical assets at risk, Telnet on the network, unknown devices with many peers and repeat offenders.
+
+**Incident review.** Alerts move through *New → In progress → Resolved / False positive* with an owner and an investigation-notes timeline, bulk triage, and **urgency** — severity adjusted by each device's asset priority (low, medium, high, critical) — so a medium alert on a critical camera outranks a high alert on a guest phone.
+
+**Signatures and threat intelligence.** Every packet is checked against Suricata / Snort rules — built-in rules for IoT exploits (Mirai loaders, Hikvision / Huawei / Realtek / GPON RCEs, Log4Shell, miners, cleartext credentials) plus any Emerging Threats Open category or `.rules` file you add — and every connection and DNS lookup against auto-updating feeds (abuse.ch Feodo Tracker, URLhaus, ThreatFox, Tor exit nodes) and your own watchlist.
+
+**Exposure and compliance.** Devices are checked for Telnet/FTP/ADB/RTSP services, SMBv1, legacy TLS, cleartext MQTT, hard-coded DNS, outdated UPnP stacks and vendors in CISA's Known Exploited Vulnerabilities catalog. Findings add to risk scores and roll up into a compliance view with a posture score.
+
+**Investigate like a SOC.** Each alert opens a detail panel showing the request that triggered it (source → destination, protocol, service, name, payload excerpt), what to do about it, the device's risk breakdown, and one-click packet evidence as a Wireshark `.pcap`. Devices have an investigation timeline, a connection log and a DNS log (kept in SQLite for a configurable retention period and searchable as `index=conn` / `index=dns`), TLS (JA3/JA4) and DHCP fingerprints, and peer-group comparison against devices of the same type.
+
+**See the network.** A network diagram lays out internet → router / access points → device groups with live status and risk, and highlights paths with suspicious destinations; a force-directed graph shows every link.
+
+**Automate the response.** Playbooks react to alerts: desktop notification, packet evidence, open an investigation, raise asset priority, tag the device, or run your own script (for example to block the device on an OpenWrt / pfSense router). Custom detections turn any search into an alert rule; dashboards turn searches into live panels; scheduled HTML reports summarise a day or week.
+
+**Monitor-mode adapters (ALFA).** Niv.ON lists Wi-Fi adapters with their chipset (RTL8812AU / RTL8814AU / MT7612U / MT7921AU / AR9271 / RT3070…), switches monitor mode on Linux (`iw`) and Windows (Npcap WlanHelper), and captures from them. macOS has no monitor-mode driver for USB adapters, so on a Mac plug the ALFA into a Raspberry Pi or Kali box and add it as a **Remote sensor**: Niv.ON logs in over SSH, enables monitor mode, optionally hops channels, and streams the capture back.
 
 **Built for daily use.** Overview dashboard, sortable device inventory with CSV export, tabbed device profiles, a live decoded-frame feed, alert triage, a ⌘K command palette, JSON reports, and automatic updates.
 

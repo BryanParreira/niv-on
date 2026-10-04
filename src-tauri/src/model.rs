@@ -4,7 +4,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
 
 /// 48-bit IEEE MAC address. Serialized as `aa:bb:cc:dd:ee:ff`.
@@ -128,6 +128,104 @@ pub struct NetInfo {
     /// Identity clues from discovery / plaintext protocols.
     #[serde(default)]
     pub hints: Vec<Hint>,
+    /// Default routers handed out by a DHCP server (option 3).
+    #[serde(default)]
+    pub routers: Vec<IpAddr>,
+    /// ICMPv6 Router Advertisement - only real routers send these.
+    #[serde(default)]
+    pub router_adv: Option<RouterAdv>,
+    /// TLS ClientHello fingerprints (JA3 / JA4).
+    #[serde(default)]
+    pub tls: Option<crate::fingerprint::ClientHello>,
+    /// DNS message is a response; `dns_rcode` 3 = NXDOMAIN.
+    #[serde(default)]
+    pub dns_response: bool,
+    #[serde(default)]
+    pub dns_rcode: u8,
+    /// First bytes of the TCP/UDP payload, for signature matching.
+    #[serde(skip)]
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RouterAdv {
+    /// Seconds; 0 means "not a default router" (e.g. Thread border routers).
+    pub lifetime: u16,
+    /// On-link prefixes (Prefix Information options).
+    pub prefixes: Vec<(Ipv6Addr, u8)>,
+}
+
+/// An IP network (`192.168.1.0/24`, `2001:db8:1::/64`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct IpNet {
+    pub addr: IpAddr,
+    pub prefix: u8,
+}
+
+impl IpNet {
+    pub fn new(addr: IpAddr, prefix: u8) -> Self {
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        IpNet {
+            addr,
+            prefix: prefix.min(max),
+        }
+    }
+
+    pub fn contains(&self, ip: &IpAddr) -> bool {
+        match (self.addr, ip) {
+            (IpAddr::V4(n), IpAddr::V4(a)) => {
+                let mask = if self.prefix == 0 {
+                    0
+                } else {
+                    u32::MAX << (32 - self.prefix as u32)
+                };
+                u32::from(n) & mask == u32::from(*a) & mask
+            }
+            (IpAddr::V6(n), IpAddr::V6(a)) => {
+                let mask = if self.prefix == 0 {
+                    0
+                } else {
+                    u128::MAX << (128 - self.prefix as u32)
+                };
+                u128::from(n) & mask == u128::from(*a) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+impl FromStr for IpNet {
+    type Err = String;
+    /// `10.0.0.0/8`, `2001:db8::/32`, or a bare address (host route).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let (a, p) = match s.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (s, None),
+        };
+        let addr: IpAddr = a
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid address: {s}"))?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match p {
+            Some(p) => p
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .filter(|p| *p <= max)
+                .ok_or_else(|| format!("invalid prefix: {s}"))?,
+            None => max,
+        };
+        Ok(IpNet::new(addr, prefix))
+    }
+}
+
+impl fmt::Display for IpNet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.addr, self.prefix)
+    }
 }
 
 /// Device identity clues leaked by LAN discovery and plaintext protocols.
@@ -145,6 +243,8 @@ pub enum Hint {
     Server(String),
     /// HTTP `User-Agent:` (plaintext port 80).
     UserAgent(String),
+    /// DHCP option 55 parameter request list, e.g. `1,3,6,15,119,252`.
+    DhcpParams(String),
 }
 
 /// ARP sender binding (MAC <-> IPv4) - discovers LAN devices.
@@ -182,6 +282,9 @@ pub struct PacketInfo {
     pub from_ds: bool,
     pub net: Option<NetInfo>,
     pub arp: Option<ArpInfo>,
+    /// The captured frame itself (live / file sources), kept for evidence pcaps.
+    #[serde(skip)]
+    pub raw: Option<Vec<u8>>,
 }
 
 impl PacketInfo {
@@ -202,6 +305,7 @@ impl PacketInfo {
             from_ds: false,
             net: None,
             arp: None,
+            raw: None,
         }
     }
 }
@@ -253,5 +357,18 @@ mod tests {
         assert!(is_local_ip(&"fe80::1".parse().unwrap()));
         assert!(!is_local_ip(&"8.8.8.8".parse().unwrap()));
         assert!(!is_local_ip(&"2606:4700::1111".parse().unwrap()));
+    }
+
+    #[test]
+    fn ip_nets() {
+        let n: IpNet = "192.168.1.0/24".parse().unwrap();
+        assert!(n.contains(&"192.168.1.200".parse().unwrap()));
+        assert!(!n.contains(&"192.168.2.1".parse().unwrap()));
+        let v6: IpNet = "2601:646:8f00:1::/64".parse().unwrap();
+        assert!(v6.contains(&"2601:646:8f00:1:1c2a:3b4c:5d6e:7f80".parse().unwrap()));
+        assert!(!v6.contains(&"2601:646:8f00:2::1".parse().unwrap()));
+        let host: IpNet = "203.0.113.7".parse().unwrap();
+        assert_eq!(host.prefix, 32);
+        assert!("10.0.0.0/33".parse::<IpNet>().is_err());
     }
 }

@@ -20,7 +20,11 @@ pub fn init() {
         extern "system" {
             fn SetDllDirectoryW(path: *const u16) -> i32;
         }
-        let wide: Vec<u16> = npcap_dir().as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let wide: Vec<u16> = npcap_dir()
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
         // SAFETY: valid NUL-terminated UTF-16 string that outlives the call.
         unsafe {
             SetDllDirectoryW(wide.as_ptr());
@@ -33,7 +37,9 @@ pub fn pcap_available() -> Result<(), String> {
     #[cfg(windows)]
     {
         let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-        let legacy = std::path::Path::new(&root).join("System32").join("wpcap.dll");
+        let legacy = std::path::Path::new(&root)
+            .join("System32")
+            .join("wpcap.dll");
         if !npcap_dir().join("wpcap.dll").exists() && !legacy.exists() {
             return Err("Npcap is not installed. Download it from https://npcap.com (tick \"Support raw 802.11 traffic\" for monitor mode), then restart Niv.ON. The simulator works without it.".into());
         }

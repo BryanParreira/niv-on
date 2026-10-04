@@ -2,13 +2,14 @@ import { useMemo, useState } from "react";
 import { api, type DeviceSummary } from "../api";
 import { Avatar, Icon } from "../components/Icon";
 import { Mac } from "../components/Mac";
+import { Risk } from "../components/Risk";
 import { Signal } from "../components/Signal";
 import { ago, fmtBytes, presence } from "../format";
 import { useNav } from "../nav";
 import { useLive, usePoll } from "../store";
 
-type SortKey = "label" | "class" | "ip" | "rssi" | "traffic" | "dest" | "lastSeen" | "alerts";
-type Filter = "all" | "iot" | "active" | "alerts" | "infra" | "wireless";
+type SortKey = "label" | "class" | "ip" | "rssi" | "traffic" | "dest" | "lastSeen" | "risk" | "alerts";
+type Filter = "all" | "iot" | "active" | "alerts" | "risk" | "infra" | "wireless";
 
 const COLS: { key: SortKey; label: string; right?: boolean }[] = [
   { key: "label", label: "Device" },
@@ -18,6 +19,7 @@ const COLS: { key: SortKey; label: string; right?: boolean }[] = [
   { key: "traffic", label: "Traffic", right: true },
   { key: "dest", label: "Hosts", right: true },
   { key: "lastSeen", label: "Last seen", right: true },
+  { key: "risk", label: "Risk" },
   { key: "alerts", label: "Alerts", right: true },
 ];
 
@@ -42,6 +44,8 @@ export function Devices({ onMessage }: { onMessage: (m: string) => void }) {
         return presence(d.lastSeen, clock) === "active";
       case "alerts":
         return d.openAlerts > 0;
+      case "risk":
+        return d.risk >= 20;
       case "infra":
         return d.isAp || d.isGateway;
       case "wireless":
@@ -74,6 +78,8 @@ export function Devices({ onMessage }: { onMessage: (m: string) => void }) {
           return d.txBytes + d.rxBytes;
         case "dest":
           return d.destinations;
+        case "risk":
+          return d.risk;
         case "alerts":
           return d.openAlerts;
       }
@@ -104,14 +110,18 @@ export function Devices({ onMessage }: { onMessage: (m: string) => void }) {
     }
   }
 
-  function exportCsv() {
-    const head = ["label", "mac", "vendor", "class", "tag", "hostname", "ips", "ssid", "rssi", "tx_bytes", "rx_bytes", "hosts", "first_seen", "last_seen", "open_alerts"];
+  async function exportCsv() {
+    const head = ["label", "mac", "vendor", "class", "tag", "hostname", "ips", "ssid", "rssi", "tx_bytes", "rx_bytes", "hosts", "first_seen", "last_seen", "risk", "open_alerts"];
     const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const lines = rows.map((d) =>
-      [d.label, d.mac, d.vendor, d.class, d.tag, d.hostname, d.ips.join(" "), d.ssid, d.rssi, d.txBytes, d.rxBytes, d.destinations, d.firstSeen, d.lastSeen, d.openAlerts].map(esc).join(","),
+      [d.label, d.mac, d.vendor, d.class, d.tag, d.hostname, d.ips.join(" "), d.ssid, d.rssi, d.txBytes, d.rxBytes, d.destinations, d.firstSeen, d.lastSeen, d.risk, d.openAlerts].map(esc).join(","),
     );
-    navigator.clipboard.writeText([head.join(","), ...lines].join("\n"));
-    onMessage(`Copied ${rows.length} devices as CSV to the clipboard.`);
+    try {
+      await navigator.clipboard.writeText([head.join(","), ...lines].join("\n"));
+      onMessage(`Copied ${rows.length} devices as CSV to the clipboard.`);
+    } catch (e) {
+      onMessage(`Could not copy to the clipboard: ${e}`);
+    }
   }
 
   return (
@@ -122,6 +132,7 @@ export function Devices({ onMessage }: { onMessage: (m: string) => void }) {
           {chip("iot", "IoT")}
           {chip("active", "Active")}
           {chip("alerts", "With alerts")}
+          {chip("risk", "At risk")}
           {chip("wireless", "Wireless")}
           {chip("infra", "Routers & APs")}
         </div>
@@ -177,6 +188,11 @@ export function Devices({ onMessage }: { onMessage: (m: string) => void }) {
                       <span className={`chip ${d.tag ? "outline" : ""}`} title={d.tag ? "Your tag" : "Auto-classified"}>{d.class}</span>
                       {d.isIot && <span className="chip good">IoT</span>}
                       {d.learning && <span className="chip">learning</span>}
+                      {d.findings > 0 && (
+                        <span className={`sev ${d.exposure ?? "low"}`} title="Exposures & vulnerabilities — see the device's Security tab">
+                          {d.findings} exposure{d.findings === 1 ? "" : "s"}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td>
@@ -190,6 +206,7 @@ export function Devices({ onMessage }: { onMessage: (m: string) => void }) {
                   </td>
                   <td className="r num">{d.destinations}</td>
                   <td className="r muted">{ago(d.lastSeen, clock)}</td>
+                  <td><Risk score={d.risk} /></td>
                   <td className="r">
                     {d.openAlerts > 0 ? <span className="sev high"><Icon name="alerts" size={12} />{d.openAlerts}</span> : <span className="muted">—</span>}
                   </td>

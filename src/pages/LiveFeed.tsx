@@ -30,7 +30,11 @@ export function LiveFeed() {
         // A restarted session resets sequence numbers.
         if (fresh[0].seq < last.current) last.current = 0;
         last.current = fresh[fresh.length - 1].seq;
-        setItems((cur) => [...fresh.reverse(), ...cur].slice(0, KEEP));
+        setItems((cur) => {
+          // Overlapping polls can return the same frames twice; keep each seq once.
+          const seen = new Set(cur.map((f) => f.seq));
+          return [...fresh.filter((f) => !seen.has(f.seq)).reverse(), ...cur].slice(0, KEEP);
+        });
       });
     tick();
     const id = setInterval(tick, 700);

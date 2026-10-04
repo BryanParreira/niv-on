@@ -14,13 +14,20 @@ interface Item {
 }
 
 const PAGES: { page: Page; title: string; icon: string }[] = [
-  { page: "overview", title: "Overview", icon: "dashboard" },
+  { page: "overview", title: "Overview", icon: "home" },
+  { page: "dashboards", title: "Dashboards", icon: "dashboard" },
+  { page: "map", title: "Network map", icon: "map" },
+  { page: "compliance", title: "Compliance & vulnerabilities", icon: "clipboard" },
+  { page: "intel", title: "Threat intel & signatures", icon: "crosshair" },
+  { page: "automation", title: "Automation playbooks", icon: "bolt" },
   { page: "devices", title: "Devices", icon: "devices" },
   { page: "feed", title: "Live feed", icon: "activity" },
-  { page: "alerts", title: "Alerts", icon: "alerts" },
+  { page: "search", title: "Search (SPL)", icon: "search" },
+  { page: "alerts", title: "Incident review (alerts)", icon: "alerts" },
   { page: "networks", title: "Networks", icon: "globe" },
   { page: "capture", title: "Capture setup", icon: "settings" },
   { page: "rules", title: "Detection rules & data", icon: "sliders" },
+  { page: "detections", title: "Custom detections", icon: "shield" },
 ];
 
 /** Global quick-jump: pages, actions and every known device. */
@@ -90,7 +97,7 @@ export function CommandPalette({ onClose, onMessage }: { onClose: () => void; on
       {
         id: "a-ack",
         icon: <span className="ic"><Icon name="check" /></span>,
-        title: "Acknowledge all alerts",
+        title: "Resolve all open alerts",
         group: "Actions",
         run: () => done(api.ackAlert(), "All alerts acknowledged."),
       },

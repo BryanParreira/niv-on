@@ -171,13 +171,37 @@ fn csv_fields(line: &str) -> Vec<String> {
 pub fn clean_vendor(name: &str) -> String {
     let mut n = name.trim().trim_end_matches('.').trim().to_string();
     const SUFFIXES: &[&str] = &[
-        " co.,ltd", " co., ltd", " co.,ltd.", " co. ltd", " co ltd", ", inc", " inc", " corporation", " corp",
-        " limited", " ltd", " llc", " gmbh", " s.a", " ag", " b.v", " oy", " ab", " pty", ",",
+        " co.,ltd",
+        " co., ltd",
+        " co.,ltd.",
+        " co. ltd",
+        " co ltd",
+        ", inc",
+        " inc",
+        " corporation",
+        " corp",
+        " limited",
+        " ltd",
+        " llc",
+        " gmbh",
+        " s.a",
+        " ag",
+        " b.v",
+        " oy",
+        " ab",
+        " pty",
+        ",",
     ];
     loop {
         let lower = n.to_lowercase();
         match SUFFIXES.iter().find(|s| lower.ends_with(*s)) {
-            Some(s) => n = n[..n.len() - s.len()].trim().trim_end_matches('.').trim().to_string(),
+            Some(s) => {
+                n = n[..n.len() - s.len()]
+                    .trim()
+                    .trim_end_matches('.')
+                    .trim()
+                    .to_string()
+            }
             None => break,
         }
     }
@@ -226,7 +250,10 @@ impl OuiDb {
                 }
             }
         }
-        OuiDb { map, external_entries }
+        OuiDb {
+            map,
+            external_entries,
+        }
     }
 
     pub fn lookup(&self, mac: &Mac) -> Option<String> {
@@ -253,6 +280,8 @@ pub struct ClassHints<'a> {
     pub domains: &'a [&'a str],
     pub ports: &'a [u16],
     pub probes_many_ssids: bool,
+    /// OS family from the DHCP fingerprint.
+    pub os: Option<&'a str>,
 }
 
 /// Best-effort automatic category. Users can override it with a tag.
@@ -265,29 +294,87 @@ pub fn classify(h: &ClassHints) -> &'static str {
     }
 
     // 2. Hostnames people/vendors give devices.
-    let host = |needles: &[&str]| h.hostnames.iter().any(|n| needles.iter().any(|k| n.to_lowercase().contains(k)));
-    if host(&["iphone", "ipad", "android", "galaxy", "pixel", "oneplus", "redmi", "huawei-p"]) {
+    let host = |needles: &[&str]| {
+        h.hostnames
+            .iter()
+            .any(|n| needles.iter().any(|k| n.to_lowercase().contains(k)))
+    };
+    if host(&[
+        "iphone", "ipad", "android", "galaxy", "pixel", "oneplus", "redmi", "huawei-p",
+    ]) {
         return "Phone / Tablet";
     }
-    if host(&["macbook", "imac", "mac-mini", "mac mini", "mac pro", "mac studio", "laptop", "desktop", "thinkpad", "surface", "-pc", "pc-", "workstation", "windows"]) {
+    if host(&[
+        "macbook",
+        "imac",
+        "mac-mini",
+        "mac mini",
+        "mac pro",
+        "mac studio",
+        "laptop",
+        "desktop",
+        "thinkpad",
+        "surface",
+        "-pc",
+        "pc-",
+        "workstation",
+        "windows",
+    ]) {
         return "Laptop / PC";
     }
-    if host(&["cam", "doorbell", "ring-", "wyze", "arlo", "blink", "eufy", "reolink"]) {
+    if host(&[
+        "cam", "doorbell", "ring-", "wyze", "arlo", "blink", "eufy", "reolink",
+    ]) {
         return "Smart Camera";
     }
-    if host(&["printer", "epson", "brother", "canon", "officejet", "laserjet", "envy"]) {
+    if host(&[
+        "printer",
+        "epson",
+        "brother",
+        "canon",
+        "officejet",
+        "laserjet",
+        "envy",
+    ]) {
         return "Printer";
     }
-    if host(&["echo", "alexa", "google-home", "nest-mini", "homepod", "sonos"]) {
+    if host(&[
+        "echo",
+        "alexa",
+        "google-home",
+        "nest-mini",
+        "homepod",
+        "sonos",
+    ]) {
         return "Smart Speaker";
     }
-    if host(&["roku", "chromecast", "firetv", "fire-tv", "appletv", "apple-tv", "shield", "bravia", "-tv", "tv-"]) {
+    if host(&[
+        "roku",
+        "chromecast",
+        "firetv",
+        "fire-tv",
+        "appletv",
+        "apple-tv",
+        "shield",
+        "bravia",
+        "-tv",
+        "tv-",
+    ]) {
         return "Media / TV";
     }
     if host(&["thermostat", "ecobee"]) {
         return "Thermostat";
     }
-    if host(&["tasmota", "shelly", "esp-", "esp_", "tuya", "wled", "smartplug", "plug"]) {
+    if host(&[
+        "tasmota",
+        "shelly",
+        "esp-",
+        "esp_",
+        "tuya",
+        "wled",
+        "smartplug",
+        "plug",
+    ]) {
         return "Smart Home Hub/Plug";
     }
     if host(&["hue", "bulb", "lifx", "light"]) {
@@ -298,7 +385,11 @@ pub fn classify(h: &ClassHints) -> &'static str {
     }
 
     // 1. DNS-SD services are the strongest passive signal.
-    let svc = |needles: &[&str]| h.services.iter().any(|s| needles.iter().any(|n| s.contains(n)));
+    let svc = |needles: &[&str]| {
+        h.services
+            .iter()
+            .any(|s| needles.iter().any(|n| s.contains(n)))
+    };
     if svc(&["_ipp", "_printer", "_pdl-datastream", "_scanner", "_uscan"]) {
         return "Printer";
     }
@@ -312,25 +403,50 @@ pub fn classify(h: &ClassHints) -> &'static str {
         return "Smart Speaker";
     }
     // Computers also advertise AirPlay receivers, so check them first.
-    if svc(&["_smb", "_afpovertcp", "_ssh", "_sftp-ssh", "_rfb", "_workstation"]) {
+    if svc(&[
+        "_smb",
+        "_afpovertcp",
+        "_ssh",
+        "_sftp-ssh",
+        "_rfb",
+        "_workstation",
+    ]) {
         return "Laptop / PC";
     }
     if svc(&["_companion-link", "_apple-mobdev", "_rdlink"]) {
         return "Phone / Laptop";
     }
-    if svc(&["_googlecast", "_roku", "_airplay", "_raop", "_androidtvremote"]) {
+    if svc(&[
+        "_googlecast",
+        "_roku",
+        "_airplay",
+        "_raop",
+        "_androidtvremote",
+    ]) {
         return "Media / TV";
     }
 
     // 3. UPnP SERVER / HTTP User-Agent banners.
-    let banner = |needles: &[&str]| h.banners.iter().any(|b| needles.iter().any(|k| b.to_lowercase().contains(k)));
+    let banner = |needles: &[&str]| {
+        h.banners
+            .iter()
+            .any(|b| needles.iter().any(|k| b.to_lowercase().contains(k)))
+    };
     if banner(&["hikvision", "dahua", "ipcam", "ip camera", "onvif"]) {
         return "Smart Camera";
     }
     if banner(&["sonos", "alexa", "amazon"]) {
         return "Smart Speaker";
     }
-    if banner(&["roku", "webos", "tizen", "smarttv", "smart tv", "bravia", "chromecast"]) {
+    if banner(&[
+        "roku",
+        "webos",
+        "tizen",
+        "smarttv",
+        "smart tv",
+        "bravia",
+        "chromecast",
+    ]) {
         return "Media / TV";
     }
     if banner(&["printer", "epson", "brother", "cups", "hp http server"]) {
@@ -342,16 +458,38 @@ pub fn classify(h: &ClassHints) -> &'static str {
     if banner(&["xbox", "playstation"]) {
         return "Game Console";
     }
-    let has_domain = |needles: &[&str]| h.domains.iter().any(|d| needles.iter().any(|n| d.contains(n)));
+    let has_domain = |needles: &[&str]| {
+        h.domains
+            .iter()
+            .any(|d| needles.iter().any(|n| d.contains(n)))
+    };
     let has_port = |ps: &[u16]| h.ports.iter().any(|p| ps.contains(p));
 
-    if has_port(&[554, 8554]) || has_domain(&["ring.com", "wyze", "hik-connect", "ezviz", "dahua", "arlo", "blinkforhome", "nest.com/camera"]) {
+    if has_port(&[554, 8554])
+        || has_domain(&[
+            "ring.com",
+            "wyze",
+            "hik-connect",
+            "ezviz",
+            "dahua",
+            "arlo",
+            "blinkforhome",
+            "nest.com/camera",
+        ])
+    {
         return "Smart Camera";
     }
     if has_domain(&["ecobee", "honeywell", "tccna", "nest.com", "home.nest"]) {
         return "Thermostat";
     }
-    if has_domain(&["meethue", "tuya", "lifx", "tplinkcloud", "smartthings", "ewelink"]) {
+    if has_domain(&[
+        "meethue",
+        "tuya",
+        "lifx",
+        "tplinkcloud",
+        "smartthings",
+        "ewelink",
+    ]) {
         return "Smart Home Hub/Plug";
     }
     if has_domain(&["sonos", "spotify", "alexa", "avs-alexa", "googlecast"]) {
@@ -391,6 +529,13 @@ pub fn classify(h: &ClassHints) -> &'static str {
                 return class;
             }
         }
+    }
+    match h.os {
+        Some("Windows") => return "Laptop / PC",
+        Some("Android") => return "Phone / Tablet",
+        Some("Apple (iOS / macOS)") => return "Phone / Laptop",
+        Some("Embedded Linux") => return "IoT Module",
+        _ => {}
     }
     if let Some(vc) = h.vendor_class.map(str::to_lowercase) {
         if vc.contains("android") {
@@ -453,12 +598,23 @@ mod tests {
             domains: &[],
             ports: &[],
             probes_many_ssids: false,
+            os: None,
         };
         assert_eq!(classify(&h), "Smart Camera");
-        let h = ClassHints { services: &["_googlecast._tcp"], vendor: None, ..h };
+        let h = ClassHints {
+            services: &["_googlecast._tcp"],
+            vendor: None,
+            ..h
+        };
         assert_eq!(classify(&h), "Media / TV");
-        assert_eq!(clean_vendor("Hangzhou Hikvision Digital Technology Co.,Ltd."), "Hangzhou Hikvision Digital Technology");
+        assert_eq!(
+            clean_vendor("Hangzhou Hikvision Digital Technology Co.,Ltd."),
+            "Hangzhou Hikvision Digital Technology"
+        );
         assert_eq!(clean_vendor("Apple, Inc."), "Apple");
-        assert_eq!(csv_fields(r#"MA-L,D011E5,"Apple, Inc.",x"#)[2], "Apple, Inc.");
+        assert_eq!(
+            csv_fields(r#"MA-L,D011E5,"Apple, Inc.",x"#)[2],
+            "Apple, Inc."
+        );
     }
 }

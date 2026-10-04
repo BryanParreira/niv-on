@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useState, type ReactNode } from "react";
-import { api, inTauri, type InterfaceInfo, type Settings, type Source, type TestResult } from "../api";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { api, inTauri, type Adapter, type InterfaceInfo, type RemoteSensor, type Settings, type Source, type TestResult } from "../api";
 import { Icon } from "../components/Icon";
 import { ifIcon } from "../components/SourceSwitcher";
 import { useLive } from "../store";
@@ -55,7 +55,9 @@ export function Capture({ onMessage }: { onMessage: (m: string) => void }) {
   async function save(start: boolean) {
     setErr(null);
     try {
-      await api.saveSettings(s!);
+      // Re-read the rest so rule and search-library changes made elsewhere survive.
+      const latest = await api.getSettings();
+      await api.saveSettings({ ...latest, capture: s!.capture });
       setDirty(false);
       if (start) {
         await api.startCapture();
@@ -120,15 +122,17 @@ export function Capture({ onMessage }: { onMessage: (m: string) => void }) {
           <h2>Capture source</h2>
           <div className="right">
             <div className="seg">
-              {(["live", "simulator", "file"] as Source[]).map((src) => (
+              {(["live", "remote", "file", "simulator"] as Source[]).map((src) => (
                 <button key={src} className={cap.source === src ? "on" : ""} onClick={() => setCap({ source: src })}>
-                  <Icon name={src === "live" ? "wifi" : src === "simulator" ? "beaker" : "file"} size={14} />
-                  {src === "simulator" ? "Simulator" : src === "live" ? "Network interface" : "Capture file"}
+                  <Icon name={src === "live" ? "wifi" : src === "simulator" ? "beaker" : src === "remote" ? "radar" : "file"} size={14} />
+                  {src === "simulator" ? "Simulator" : src === "live" ? "Network interface" : src === "remote" ? "Remote sensor" : "Capture file"}
                 </button>
               ))}
             </div>
           </div>
         </div>
+
+        {cap.source === "remote" && <RemoteSensorForm value={cap.remote} onChange={(r) => setCap({ remote: r })} />}
 
         {cap.source === "simulator" && (
           <p className="dim" style={{ margin: 0 }}>
@@ -267,6 +271,8 @@ export function Capture({ onMessage }: { onMessage: (m: string) => void }) {
         )}
       </div>
 
+      <Adapters onMessage={onMessage} onUse={(iface) => setCap({ source: "live", interface: iface, monitorMode: true })} />
+
       <PlatformGuide platform={access?.platform} />
 
       <div className="savebar">
@@ -326,6 +332,163 @@ function PlatformGuide({ platform }: { platform?: string }) {
           per-device destination baselines, capture in managed mode on the gateway, a mirrored switch port, a Raspberry Pi
           access point, or an open lab network.
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Wi-Fi adapters, their chipsets and monitor-mode support on this OS. */
+function Adapters({ onMessage, onUse }: { onMessage: (m: string) => void; onUse: (iface: string) => void }) {
+  const [list, setList] = useState<Adapter[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [channel, setChannel] = useState(6);
+  const load = () => {
+    setList(null);
+    api.listAdapters().then(setList).catch((e) => { setList([]); onMessage(String(e)); });
+  };
+  useEffect(() => {
+    if (inTauri) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  async function toggle(a: Adapter, enable: boolean) {
+    if (!a.iface) return;
+    setBusy(a.iface);
+    try {
+      onMessage(await api.setMonitorMode(a.iface, enable, enable ? channel : undefined));
+    } catch (e) {
+      onMessage(String(e));
+    } finally {
+      setBusy(null);
+      load();
+    }
+  }
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h2>Wi-Fi adapters &amp; monitor mode</h2>
+        <span className="sub">including ALFA cards (Realtek RTL8812AU/8814AU, MediaTek MT7612U/7921AU, Atheros AR9271, Ralink)</span>
+        <div className="right">
+          <label className="small dim" htmlFor="mon-ch">Channel</label>
+          <select id="mon-ch" className="select" value={channel} onChange={(e) => setChannel(Number(e.target.value))}>
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 36, 40, 44, 48, 149, 153, 157, 161].map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <button className="btn sm ghost" onClick={load}><Icon name="refresh" size={12} /> Rescan</button>
+        </div>
+      </div>
+      {list === null ? <div className="empty small">Detecting adapters…</div> : list.length === 0 ? (
+        <div className="empty small">No Wi-Fi adapters found. Plug in the ALFA card and press Rescan.</div>
+      ) : (
+        <div className="stack">
+          {list.map((a, i) => (
+            <div key={i} className="adapter">
+              <span className="avatar"><Icon name={a.usb ? "radar" : "wifi"} size={17} /></span>
+              <div style={{ minWidth: 0 }}>
+                <div className="row" style={{ gap: 6 }}>
+                  <span className="name">{a.name}</span>
+                  {a.iface && <span className="chip mono">{a.iface}</span>}
+                  {a.alfaChipset && <span className="chip accent">ALFA chipset</span>}
+                  {a.mode === "monitor" && <span className="chip good">monitor mode</span>}
+                  {a.monitorSupported ? <span className="chip good">monitor supported here</span> : <span className="chip">no monitor mode on this OS</span>}
+                </div>
+                <div className="muted small">
+                  {[a.chipset, a.driver && `driver ${a.driver}`, a.usbId && `USB ${a.usbId}`].filter(Boolean).join(" · ")}
+                </div>
+                <div className="small dim" style={{ marginTop: 4 }}>{a.note}</div>
+              </div>
+              <div className="row" style={{ justifyContent: "flex-end" }}>
+                {a.canToggle && a.iface && (
+                  a.mode === "monitor"
+                    ? <button className="btn sm" disabled={busy !== null} onClick={() => toggle(a, false)}>Back to managed</button>
+                    : <button className="btn sm" disabled={busy !== null} onClick={() => toggle(a, true)}>{busy === a.iface ? "Switching…" : "Enable monitor mode"}</button>
+                )}
+                {a.monitorSupported && a.iface && (
+                  <button className="btn sm primary" onClick={() => onUse(a.iface!)}>Capture in monitor mode</button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A Linux box (Raspberry Pi, Kali) with a monitor-capable adapter, streamed over SSH. */
+function RemoteSensorForm({ value: r, onChange }: { value: RemoteSensor; onChange: (r: RemoteSensor) => void }) {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const set = (p: Partial<RemoteSensor>) => {
+    onChange({ ...r, ...p });
+    setResult(null);
+  };
+  const generated = useMemo(() => {
+    const i = r.iface.trim() || "wlan1";
+    let s = "";
+    if (r.monitor) {
+      s += `ip link set ${i} down; iw dev ${i} set type monitor; ip link set ${i} up; iw dev ${i} set channel ${r.channel}; `;
+      if (r.hop) s += `(channel hopping loop) & `;
+    }
+    return `ssh ${r.host || "user@sensor"} "sudo -n sh -c '${s}exec tcpdump -i ${i} -U -s 4096 -w - not port 22'"`;
+  }, [r]);
+  async function test() {
+    setTesting(true);
+    try {
+      setResult({ ok: true, msg: await api.testRemoteSensor(r) });
+    } catch (e) {
+      setResult({ ok: false, msg: String(e) });
+    } finally {
+      setTesting(false);
+    }
+  }
+  return (
+    <div className="stack">
+      <p className="dim" style={{ margin: 0 }}>
+        Use a monitor-capable adapter (such as an ALFA card) plugged into a Linux machine — a Raspberry Pi or Kali VM — as a sensor.
+        Niv.ON logs in with SSH, puts the adapter in monitor mode and streams the capture back here, so this computer stays on its network.
+      </p>
+      <div className="form-grid">
+        <div className="field">
+          <label htmlFor="rs-host">Sensor (SSH)</label>
+          <input id="rs-host" className="input mono" placeholder="pi@raspberrypi.local" value={r.host} onChange={(e) => set({ host: e.target.value.trim() })} />
+          <span className="hint">Key-based login required (<span className="mono">ssh-copy-id pi@raspberrypi.local</span>).</span>
+        </div>
+        <div className="field">
+          <label htmlFor="rs-port">SSH port</label>
+          <input id="rs-port" className="input num" type="number" min={1} max={65535} value={r.port} style={{ width: 110 }}
+            onChange={(e) => set({ port: Math.min(65535, Math.max(1, Number(e.target.value) || 22)) })} />
+        </div>
+        <div className="field">
+          <label htmlFor="rs-if">Adapter on the sensor</label>
+          <input id="rs-if" className="input mono" placeholder="wlan1" value={r.iface} onChange={(e) => set({ iface: e.target.value.trim() })} />
+          <span className="hint">Usually <span className="mono">wlan1</span> for a USB ALFA (wlan0 is the Pi's own Wi-Fi).</span>
+        </div>
+      </div>
+      <div className="row" style={{ gap: 16 }}>
+        <Toggle checked={r.monitor} onChange={(v) => set({ monitor: v })}>Put the adapter in monitor mode</Toggle>
+        {r.monitor && (
+          <>
+            <label className="small dim" htmlFor="rs-ch">Channel</label>
+            <select id="rs-ch" className="select" value={r.channel} disabled={r.hop} onChange={(e) => set({ channel: Number(e.target.value) })}>
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 36, 40, 44, 48, 149, 153, 157, 161].map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <Toggle checked={r.hop} onChange={(v) => set({ hop: v })}>Hop channels (2.4 + 5 GHz)</Toggle>
+          </>
+        )}
+      </div>
+      <details>
+        <summary className="small dim" style={{ cursor: "pointer" }}>Advanced: command run on the sensor</summary>
+        <div className="mono small dim" style={{ margin: "8px 0", overflowWrap: "anywhere" }}>{generated}</div>
+        <input className="input mono" placeholder="Custom remote command (must write pcap to stdout)" value={r.customCommand}
+          onChange={(e) => set({ customCommand: e.target.value })} style={{ width: "100%" }} />
+        <span className="hint">The sensor needs <span className="mono">tcpdump</span> and <span className="mono">iw</span>, and passwordless sudo for this user.</span>
+      </details>
+      <div className="row">
+        <button className="btn" onClick={test} disabled={testing || !r.host}><Icon name="check" size={13} /> {testing ? "Checking sensor…" : "Test sensor"}</button>
+        {result && (
+          <span className="small" style={{ color: result.ok ? "var(--good)" : "var(--critical)" }}>
+            <Icon name={result.ok ? "check" : "octagon"} size={12} /> {result.msg}
+          </span>
+        )}
       </div>
     </div>
   );

@@ -62,22 +62,58 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let out = c.output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn kind_from_text(t: &str) -> Option<IfKind> {
     let l = t.to_lowercase();
-    if l.contains("wi-fi") || l.contains("wifi") || l.contains("wireless") || l.contains("wlan") || l.contains("802.11") || l.contains("airport") {
+    if l.contains("wi-fi")
+        || l.contains("wifi")
+        || l.contains("wireless")
+        || l.contains("wlan")
+        || l.contains("802.11")
+        || l.contains("airport")
+    {
         Some(IfKind::Wifi)
     } else if l.contains("loopback") {
         Some(IfKind::Loopback)
-    } else if ["vpn", "tap-", "tap ", "wireguard", "tunnel", "tailscale", "zerotier", "openvpn"].iter().any(|k| l.contains(k)) {
+    } else if [
+        "vpn",
+        "tap-",
+        "tap ",
+        "wireguard",
+        "tunnel",
+        "tailscale",
+        "zerotier",
+        "openvpn",
+    ]
+    .iter()
+    .any(|k| l.contains(k))
+    {
         Some(IfKind::Vpn)
-    } else if ["virtual", "hyper-v", "vmware", "virtualbox", "docker", "wsl", "bridge"].iter().any(|k| l.contains(k)) {
+    } else if [
+        "virtual",
+        "hyper-v",
+        "vmware",
+        "virtualbox",
+        "docker",
+        "wsl",
+        "bridge",
+    ]
+    .iter()
+    .any(|k| l.contains(k))
+    {
         Some(IfKind::Virtual)
     } else if l.contains("bluetooth") {
         Some(IfKind::Other)
-    } else if l.contains("ethernet") || l.contains("lan") || l.contains("gbe") || l.contains("usb") || l.contains("thunderbolt") {
+    } else if l.contains("ethernet")
+        || l.contains("lan")
+        || l.contains("gbe")
+        || l.contains("usb")
+        || l.contains("thunderbolt")
+    {
         Some(IfKind::Ethernet)
     } else {
         None
@@ -89,11 +125,47 @@ fn kind_from_name(n: &str) -> IfKind {
     let starts = |p: &[&str]| p.iter().any(|x| n.starts_with(x));
     if starts(&["lo"]) {
         IfKind::Loopback
-    } else if starts(&["utun", "tun", "ipsec", "ppp", "wg", "tailscale", "zt", "gif", "stf"]) {
+    } else if starts(&[
+        "utun",
+        "tun",
+        "ipsec",
+        "ppp",
+        "wg",
+        "tailscale",
+        "zt",
+        "gif",
+        "stf",
+    ]) {
         IfKind::Vpn
     } else if starts(&["wl", "wlan", "ath", "ra", "mon"]) {
         IfKind::Wifi
-    } else if starts(&["awdl", "llw", "anpi", "ap", "nan", "bridge", "br", "docker", "veth", "virbr", "vmnet", "vboxnet", "xhc", "pktap", "any", "nflog", "nfqueue", "dbus", "bluetooth", "usbmon", "ciscodump", "randpkt", "sshdump", "udpdump", "etwdump"]) {
+    } else if starts(&[
+        "awdl",
+        "llw",
+        "anpi",
+        "ap",
+        "nan",
+        "bridge",
+        "br",
+        "docker",
+        "veth",
+        "virbr",
+        "vmnet",
+        "vboxnet",
+        "xhc",
+        "pktap",
+        "any",
+        "nflog",
+        "nfqueue",
+        "dbus",
+        "bluetooth",
+        "usbmon",
+        "ciscodump",
+        "randpkt",
+        "sshdump",
+        "udpdump",
+        "etwdump",
+    ]) {
         IfKind::Virtual
     } else if starts(&["en", "eth", "em", "eno", "ens", "enp", "enx"]) {
         IfKind::Ethernet
@@ -118,7 +190,14 @@ fn os_info() -> HashMap<String, OsInfo> {
                     if let (Some(p), Some(d)) = (port.take(), dev.take()) {
                         let kind = kind_from_text(&p);
                         let mac = Some(v.trim().to_lowercase()).filter(|s| s.contains(':'));
-                        m.insert(d, OsInfo { friendly: Some(p), mac, kind });
+                        m.insert(
+                            d,
+                            OsInfo {
+                                friendly: Some(p),
+                                mac,
+                                kind,
+                            },
+                        );
                     }
                 }
             }
@@ -130,7 +209,10 @@ fn os_info() -> HashMap<String, OsInfo> {
                 let p = e.path();
                 let wireless = p.join("wireless").exists() || p.join("phy80211").exists();
                 let physical = p.join("device").exists();
-                let mac = std::fs::read_to_string(p.join("address")).ok().map(|s| s.trim().to_string()).filter(|s| s != "00:00:00:00:00:00");
+                let mac = std::fs::read_to_string(p.join("address"))
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| s != "00:00:00:00:00:00");
                 let kind = if wireless {
                     Some(IfKind::Wifi)
                 } else if physical {
@@ -143,24 +225,39 @@ fn os_info() -> HashMap<String, OsInfo> {
                     Some(IfKind::Ethernet) => Some("Ethernet".to_string()),
                     _ => None,
                 };
-                m.insert(name, OsInfo { friendly, mac, kind });
+                m.insert(
+                    name,
+                    OsInfo {
+                        friendly,
+                        mac,
+                        kind,
+                    },
+                );
             }
         }
     } else if cfg!(windows) {
         // "Connection Name","Network Adapter","Physical Address","Transport Name"
         if let Some(out) = run("getmac", &["/fo", "csv", "/nh", "/v"]) {
             for line in out.lines() {
-                let cols: Vec<String> = line.split("\",\"").map(|c| c.trim_matches('"').trim().to_string()).collect();
+                let cols: Vec<String> = line
+                    .split("\",\"")
+                    .map(|c| c.trim_matches('"').trim().to_string())
+                    .collect();
                 if cols.len() < 4 {
                     continue;
                 }
                 if let (Some(a), Some(b)) = (cols[3].find('{'), cols[3].find('}')) {
                     let guid = &cols[3][a..=b];
-                    let mac = Some(cols[2].replace('-', ":").to_lowercase()).filter(|s| s.len() == 17);
+                    let mac =
+                        Some(cols[2].replace('-', ":").to_lowercase()).filter(|s| s.len() == 17);
                     let kind = kind_from_text(&cols[0]).or_else(|| kind_from_text(&cols[1]));
                     m.insert(
                         format!("\\Device\\NPF_{guid}"),
-                        OsInfo { friendly: Some(format!("{} — {}", cols[0], cols[1])), mac, kind },
+                        OsInfo {
+                            friendly: Some(format!("{} — {}", cols[0], cols[1])),
+                            mac,
+                            kind,
+                        },
                     );
                 }
             }
@@ -173,7 +270,10 @@ fn os_info() -> HashMap<String, OsInfo> {
 fn default_route() -> (Option<String>, Option<String>) {
     if cfg!(target_os = "macos") {
         if let Some(out) = run("route", &["-n", "get", "default"]) {
-            let get = |k: &str| out.lines().find_map(|l| l.trim().strip_prefix(k).map(|v| v.trim().to_string()));
+            let get = |k: &str| {
+                out.lines()
+                    .find_map(|l| l.trim().strip_prefix(k).map(|v| v.trim().to_string()))
+            };
             return (get("interface:"), get("gateway:"));
         }
     } else if cfg!(target_os = "linux") {
@@ -181,7 +281,9 @@ fn default_route() -> (Option<String>, Option<String>) {
             for l in t.lines().skip(1) {
                 let c: Vec<&str> = l.split_whitespace().collect();
                 if c.len() > 2 && c[1] == "00000000" {
-                    let gw = u32::from_str_radix(c[2], 16).ok().map(|g| Ipv4Addr::from(g.swap_bytes()).to_string());
+                    let gw = u32::from_str_radix(c[2], 16)
+                        .ok()
+                        .map(|g| Ipv4Addr::from(g.swap_bytes()).to_string());
                     return (Some(c[0].to_string()), gw);
                 }
             }
@@ -224,12 +326,19 @@ pub fn list() -> Result<Vec<Interface>, String> {
                 .addresses
                 .iter()
                 .filter_map(|a| match (a.addr, a.netmask) {
-                    (std::net::IpAddr::V4(ip), Some(std::net::IpAddr::V4(m))) => Some((ip, Some(m))),
+                    (std::net::IpAddr::V4(ip), Some(std::net::IpAddr::V4(m))) => {
+                        Some((ip, Some(m)))
+                    }
                     (std::net::IpAddr::V4(ip), _) => Some((ip, None)),
                     _ => None,
                 })
                 .collect();
-            let ipv6 = d.addresses.iter().filter(|a| a.addr.is_ipv6()).map(|a| a.addr.to_string()).collect();
+            let ipv6 = d
+                .addresses
+                .iter()
+                .filter(|a| a.addr.is_ipv6())
+                .map(|a| a.addr.to_string())
+                .collect();
             let network = ipv4.iter().find_map(|(ip, m)| {
                 let m = (*m)?;
                 let net = Ipv4Addr::from(u32::from(*ip) & u32::from(m));
@@ -244,20 +353,29 @@ pub fn list() -> Result<Vec<Interface>, String> {
             } else if d.flags.is_wireless() && kind != IfKind::Virtual {
                 kind = IfKind::Wifi;
             }
-            let is_default = def_if.as_deref().is_some_and(|di| di == d.name || ipv4.iter().any(|(ip, _)| ip.to_string() == di));
-            let friendly = info.and_then(|i| i.friendly.clone()).or_else(|| d.desc.clone()).unwrap_or_else(|| {
-                match kind {
-                    IfKind::Wifi => "Wi-Fi",
-                    IfKind::Ethernet => "Ethernet",
-                    IfKind::Loopback => "Loopback",
-                    IfKind::Vpn => "VPN / tunnel",
-                    IfKind::Virtual => "Virtual",
-                    IfKind::Other => "Other",
-                }
-                .to_string()
-            });
+            let is_default = def_if
+                .as_deref()
+                .is_some_and(|di| di == d.name || ipv4.iter().any(|(ip, _)| ip.to_string() == di));
+            let friendly = info
+                .and_then(|i| i.friendly.clone())
+                .or_else(|| d.desc.clone())
+                .unwrap_or_else(|| {
+                    match kind {
+                        IfKind::Wifi => "Wi-Fi",
+                        IfKind::Ethernet => "Ethernet",
+                        IfKind::Loopback => "Loopback",
+                        IfKind::Vpn => "VPN / tunnel",
+                        IfKind::Virtual => "Virtual",
+                        IfKind::Other => "Other",
+                    }
+                    .to_string()
+                });
             let up = d.flags.is_up();
-            let hidden = !is_default && (matches!(kind, IfKind::Loopback | IfKind::Vpn | IfKind::Virtual | IfKind::Other) || !up);
+            let hidden = !is_default
+                && (matches!(
+                    kind,
+                    IfKind::Loopback | IfKind::Vpn | IfKind::Virtual | IfKind::Other
+                ) || !up);
             Interface {
                 friendly,
                 description: d.desc.clone(),
@@ -301,12 +419,20 @@ fn norm_mac(token: &str) -> Option<String> {
     if parts.len() != 6 {
         return None;
     }
-    let bytes: Option<Vec<u8>> = parts.iter().map(|p| u8::from_str_radix(p, 16).ok()).collect();
+    let bytes: Option<Vec<u8>> = parts
+        .iter()
+        .map(|p| u8::from_str_radix(p, 16).ok())
+        .collect();
     let b = bytes?;
     if b.iter().all(|x| *x == 0) || b.iter().all(|x| *x == 0xff) {
         return None;
     }
-    Some(b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(":"))
+    Some(
+        b.iter()
+            .map(|x| format!("{x:02x}"))
+            .collect::<Vec<_>>()
+            .join(":"),
+    )
 }
 
 /// Router MAC from the OS ARP cache — a stable fingerprint for "this network".
@@ -316,13 +442,24 @@ pub fn gateway_mac(gateway: &str) -> Option<String> {
     let lookup = || -> Option<String> {
         if cfg!(target_os = "linux") {
             if let Ok(t) = std::fs::read_to_string("/proc/net/arp") {
-                if let Some(m) = t.lines().filter(|l| l.split_whitespace().next() == Some(gateway)).find_map(|l| l.split_whitespace().nth(3).and_then(norm_mac)) {
+                if let Some(m) = t
+                    .lines()
+                    .filter(|l| l.split_whitespace().next() == Some(gateway))
+                    .find_map(|l| l.split_whitespace().nth(3).and_then(norm_mac))
+                {
                     return Some(m);
                 }
             }
         }
-        let out = if cfg!(windows) { run("arp", &["-a", gateway]) } else { run("arp", &["-n", gateway]) }?;
-        out.lines().filter(|l| l.contains(gateway)).flat_map(|l| l.split_whitespace()).find_map(norm_mac)
+        let out = if cfg!(windows) {
+            run("arp", &["-a", gateway])
+        } else {
+            run("arp", &["-n", gateway])
+        }?;
+        out.lines()
+            .filter(|l| l.contains(gateway))
+            .flat_map(|l| l.split_whitespace())
+            .find_map(norm_mac)
     };
     lookup().or_else(|| {
         let _ = if cfg!(windows) {
@@ -367,7 +504,11 @@ pub struct NetIdentity {
 /// Work out which network an interface is attached to.
 pub fn identify(i: &Interface) -> NetIdentity {
     let gw_mac = i.gateway.as_deref().and_then(gateway_mac);
-    let ssid = if i.kind == IfKind::Wifi { current_ssid(&i.name) } else { None };
+    let ssid = if i.kind == IfKind::Wifi {
+        current_ssid(&i.name)
+    } else {
+        None
+    };
     let id = match (&gw_mac, &i.network, &i.gateway) {
         (Some(m), _, _) => format!("net:{m}"),
         (None, Some(net), Some(gw)) => format!("net:{net}@{gw}"),
@@ -378,7 +519,13 @@ pub fn identify(i: &Interface) -> NetIdentity {
         Some(net) => format!("{} · {net}", i.friendly),
         None => format!("{} ({})", i.friendly, i.name),
     });
-    NetIdentity { id, name, subnet: i.network.clone(), gateway_mac: gw_mac, ssid }
+    NetIdentity {
+        id,
+        name,
+        subnet: i.network.clone(),
+        gateway_mac: gw_mac,
+        ssid,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +556,12 @@ pub fn platform() -> &'static str {
 /// the current user may capture at all.
 pub fn check_access() -> Access {
     if let Err(e) = crate::platform::pcap_available() {
-        return Access { ok: false, message: e, can_fix: false, platform: platform() };
+        return Access {
+            ok: false,
+            message: e,
+            can_fix: false,
+            platform: platform(),
+        };
     }
     let ifs = list().unwrap_or_default();
     let Some(target) = ifs.iter().find(|i| !i.hidden).or(ifs.first()) else {
@@ -424,9 +576,15 @@ pub fn check_access() -> Access {
             platform: platform(),
         };
     };
-    let res = pcap::Capture::from_device(target.name.as_str()).and_then(|c| c.timeout(50).snaplen(64).open());
+    let res = pcap::Capture::from_device(target.name.as_str())
+        .and_then(|c| c.timeout(50).snaplen(64).open());
     match res {
-        Ok(_) => Access { ok: true, message: format!("Capture access OK (tested on {}).", target.name), can_fix: false, platform: platform() },
+        Ok(_) => Access {
+            ok: true,
+            message: format!("Capture access OK (tested on {}).", target.name),
+            can_fix: false,
+            platform: platform(),
+        },
         Err(e) => Access {
             ok: false,
             message: crate::capture::friendly_error(&e.to_string()),
@@ -441,11 +599,17 @@ pub fn fix_access() -> Result<String, String> {
     if cfg!(target_os = "macos") {
         // Same approach as Wireshark's ChmodBPF: let the admin group read BPF.
         let script = r#"do shell script "chgrp admin /dev/bpf* && chmod g+rw /dev/bpf*" with prompt "Niv.ON needs permission to capture network packets (grants the admin group access to /dev/bpf until reboot)." with administrator privileges"#;
-        let out = Command::new("osascript").args(["-e", script]).output().map_err(|e| e.to_string())?;
+        let out = Command::new("osascript")
+            .args(["-e", script])
+            .output()
+            .map_err(|e| e.to_string())?;
         if out.status.success() {
             Ok("Capture access granted until the next reboot. For a permanent fix install Wireshark's ChmodBPF package.".into())
         } else {
-            Err(format!("Not granted: {}", String::from_utf8_lossy(&out.stderr).trim()))
+            Err(format!(
+                "Not granted: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
         }
     } else if cfg!(target_os = "linux") {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -453,11 +617,19 @@ pub fn fix_access() -> Result<String, String> {
             .args(["setcap", "cap_net_raw,cap_net_admin=eip"])
             .arg(&exe)
             .output()
-            .map_err(|e| format!("pkexec not available ({e}). Run: sudo setcap cap_net_raw,cap_net_admin=eip {}", exe.display()))?;
+            .map_err(|e| {
+                format!(
+                    "pkexec not available ({e}). Run: sudo setcap cap_net_raw,cap_net_admin=eip {}",
+                    exe.display()
+                )
+            })?;
         if out.status.success() {
             Ok("Capabilities granted. Restart Niv.ON to apply them.".into())
         } else {
-            Err(format!("Not granted: {}", String::from_utf8_lossy(&out.stderr).trim()))
+            Err(format!(
+                "Not granted: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
         }
     } else {
         Err("On Windows, install Npcap (https://npcap.com) and restart Niv.ON. For monitor mode, run Niv.ON as Administrator.".into())
@@ -484,11 +656,23 @@ pub struct TestResult {
 pub fn test_interface(name: &str, monitor: bool, promisc: bool) -> TestResult {
     let started = Instant::now();
     if let Err(e) = crate::platform::pcap_available() {
-        return TestResult { ok: false, linktype: None, packets: 0, decoded: 0, with_rssi: 0, seconds: 0.0, message: e };
+        return TestResult {
+            ok: false,
+            linktype: None,
+            packets: 0,
+            decoded: 0,
+            with_rssi: 0,
+            seconds: 0.0,
+            message: e,
+        };
     }
     let opened = (|| {
         #[allow(unused_mut)]
-        let mut c = pcap::Capture::from_device(name)?.promisc(promisc).snaplen(4096).timeout(200).immediate_mode(true);
+        let mut c = pcap::Capture::from_device(name)?
+            .promisc(promisc)
+            .snaplen(4096)
+            .timeout(200)
+            .immediate_mode(true);
         #[cfg(not(windows))]
         if monitor {
             c = c.rfmon(true);
@@ -622,12 +806,115 @@ mod tests {
     #[ignore]
     fn real_interfaces_and_access() {
         for i in super::list().unwrap().iter().filter(|i| !i.hidden) {
-            println!("{} | {} | {:?} | mac={:?} ip={:?} net={:?} default={} gw={:?}", i.name, i.friendly, i.kind, i.mac, i.ipv4, i.network, i.is_default, i.gateway);
+            println!(
+                "{} | {} | {:?} | mac={:?} ip={:?} net={:?} default={} gw={:?}",
+                i.name, i.friendly, i.kind, i.mac, i.ipv4, i.network, i.is_default, i.gateway
+            );
         }
         println!("{:?}", super::check_access());
         if let Some(d) = super::list().unwrap().iter().find(|i| i.is_default) {
             println!("identity: {:?}", super::identify(d));
         }
+    }
+
+    /// Replay a capture file from this network (`NIV_PCAP=path`) with the same
+    /// interface context a live capture gets, and print what was inferred:
+    /// `NIV_PCAP=x.pcap cargo test real_replay -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[allow(clippy::unnecessary_cast)]
+    fn real_replay() {
+        use crate::engine::Engine;
+        use crate::oui::OuiDb;
+        use crate::settings::RuleSettings;
+
+        let path = std::env::var("NIV_PCAP").expect("set NIV_PCAP");
+        let ifs = super::list().unwrap();
+        let i = ifs
+            .iter()
+            .find(|i| i.is_default)
+            .expect("no default interface");
+        let mut eng = Engine::new(RuleSettings::default(), OuiDb::load(None));
+        eng.self_macs.extend(
+            i.mac
+                .as_deref()
+                .and_then(|m| m.parse::<crate::model::Mac>().ok()),
+        );
+        eng.self_ips.extend(
+            i.ipv4
+                .iter()
+                .chain(i.ipv6.iter())
+                .filter_map(|a| a.parse::<std::net::IpAddr>().ok()),
+        );
+        eng.gateway_ip = i.gateway.as_deref().and_then(|g| g.parse().ok());
+        eng.lan_nets = i.network.iter().filter_map(|n| n.parse().ok()).collect();
+        eng.gateway_macs.extend(
+            i.gateway
+                .as_deref()
+                .and_then(super::gateway_mac)
+                .and_then(|m| m.parse::<crate::model::Mac>().ok()),
+        );
+        let mut rules = crate::ids::RuleSet::default();
+        rules.add_text("built-in", crate::ids::BUILTIN);
+        // NIV_RULES_DIR: extra .rules files (e.g. ET Open) to test against real traffic.
+        if let Ok(dir) = std::env::var("NIV_RULES_DIR") {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                rules.add_text(
+                    &e.file_name().to_string_lossy(),
+                    &std::fs::read_to_string(e.path()).unwrap_or_default(),
+                );
+            }
+        }
+        rules.build();
+        println!("{} signatures", rules.rules.len());
+        eng.ids = std::sync::Arc::new(rules);
+        let mut cap = pcap::Capture::from_file(&path).unwrap();
+        let lt = cap.get_datalink().0;
+        let mut first = true;
+        while let Ok(p) = cap.next_packet() {
+            let ts =
+                crate::capture::ts_now_from(p.header.ts.tv_sec as i64, p.header.ts.tv_usec as i64);
+            if first {
+                eng.begin_session(Some(ts));
+                first = false;
+            }
+            if let Some(info) = crate::parser::parse(lt, p.data, ts, p.header.len) {
+                eng.process(&info);
+            }
+        }
+        eng.tick(None);
+        eng.flush_flows();
+        let (flows, dns) = eng.drain_records();
+        println!(
+            "{} connections, {} DNS answers logged",
+            flows.len(),
+            dns.len()
+        );
+        for d in eng.devices.values() {
+            for f in crate::exposure::assess(d, &eng.kev) {
+                println!("  finding {} {:?}: {}", d.label(), f.severity, f.title);
+            }
+            for (h, t) in &d.tls {
+                println!("  tls {} {h} {} {:?}", d.label(), t.ja3, t.sni);
+            }
+        }
+        println!(
+            "gateway ip {:?}, router macs {:?}, lan {:?}",
+            eng.gateway_ip, eng.gateway_macs, eng.lan_nets
+        );
+        for d in eng.summaries() {
+            println!(
+                "  {:<30} {:<20} {} gw={} self={} hosts={} risk={}",
+                d.label, d.class, d.mac, d.is_gateway, d.is_self, d.destinations, d.risk
+            );
+        }
+        for a in &eng.alerts {
+            println!("  alert {:?} {} {}", a.severity, a.rule, a.title);
+        }
+        assert!(
+            eng.devices.values().filter(|d| d.is_gateway).count() <= 1,
+            "more than one gateway"
+        );
     }
 
     /// End-to-end on the real network: capture 20 s on the default interface,
@@ -643,30 +930,67 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let ifs = super::list().unwrap();
-        let i = ifs.iter().find(|i| i.is_default).expect("no default interface");
-        println!("capturing on {} ({}) {:?} gw {:?}", i.name, i.friendly, i.ipv4, i.gateway);
+        let i = ifs
+            .iter()
+            .find(|i| i.is_default)
+            .expect("no default interface");
+        println!(
+            "capturing on {} ({}) {:?} gw {:?}",
+            i.name, i.friendly, i.ipv4, i.gateway
+        );
         let r = super::test_interface(&i.name, false, true);
         println!("self-test: {r:?}");
         assert!(r.linktype.is_some(), "cannot open interface: {}", r.message);
 
         // NIV_DATA_DIR may point at a folder holding oui.csv / manuf for vendor names.
-        let data = std::env::var("NIV_DATA_DIR").ok().map(std::path::PathBuf::from);
+        let data = std::env::var("NIV_DATA_DIR")
+            .ok()
+            .map(std::path::PathBuf::from);
         let mut eng = Engine::new(RuleSettings::default(), OuiDb::load(data.as_deref()));
-        eng.self_hostname = std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().trim_end_matches(".local").to_string());
-        eng.self_macs.extend(i.mac.as_deref().and_then(|m| m.parse::<crate::model::Mac>().ok()));
-        eng.self_ips.extend(i.ipv4.iter().filter_map(|a| a.parse::<std::net::IpAddr>().ok()));
+        eng.self_hostname = std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .trim_end_matches(".local")
+                    .to_string()
+            });
+        eng.self_macs.extend(
+            i.mac
+                .as_deref()
+                .and_then(|m| m.parse::<crate::model::Mac>().ok()),
+        );
+        eng.self_ips.extend(
+            i.ipv4
+                .iter()
+                .filter_map(|a| a.parse::<std::net::IpAddr>().ok()),
+        );
         eng.gateway_ip = i.gateway.as_deref().and_then(|g| g.parse().ok());
 
-        let mut cap = pcap::Capture::from_device(i.name.as_str()).unwrap().promisc(true).snaplen(4096).timeout(200).immediate_mode(true).open().unwrap();
+        let mut cap = pcap::Capture::from_device(i.name.as_str())
+            .unwrap()
+            .promisc(true)
+            .snaplen(4096)
+            .timeout(200)
+            .immediate_mode(true)
+            .open()
+            .unwrap();
         let lt = cap.get_datalink().0;
-        let (name, mac) = (i.name.clone(), i.mac.as_deref().and_then(super::parse_mac_str).unwrap());
+        let (name, mac) = (
+            i.name.clone(),
+            i.mac.as_deref().and_then(super::parse_mac_str).unwrap(),
+        );
         let sweeper = std::thread::spawn(move || super::arp_sweep(&name, mac));
         let (mut pk, mut dec) = (0, 0);
         let end = Instant::now() + Duration::from_secs(20);
         while Instant::now() < end {
             if let Ok(p) = cap.next_packet() {
                 pk += 1;
-                let ts = crate::capture::ts_now_from(p.header.ts.tv_sec as i64, p.header.ts.tv_usec as i64);
+                let ts = crate::capture::ts_now_from(
+                    p.header.ts.tv_sec as i64,
+                    p.header.ts.tv_usec as i64,
+                );
                 if let Some(info) = crate::parser::parse(lt, p.data, ts, p.header.len) {
                     dec += 1;
                     eng.process(&info);
@@ -679,8 +1003,18 @@ mod tests {
         for d in eng.summaries() {
             println!(
                 "  {:<28} {:<22} {} {:<16} {:<22} self={} gw={} hosts={}",
-                d.label, d.class, d.mac, d.ips.iter().find(|x| x.is_ipv4()).map(|x| x.to_string()).unwrap_or_default(),
-                d.vendor.unwrap_or_default(), d.is_self, d.is_gateway, d.destinations
+                d.label,
+                d.class,
+                d.mac,
+                d.ips
+                    .iter()
+                    .find(|x| x.is_ipv4())
+                    .map(|x| x.to_string())
+                    .unwrap_or_default(),
+                d.vendor.unwrap_or_default(),
+                d.is_self,
+                d.is_gateway,
+                d.destinations
             );
         }
         for f in eng.feed.iter().rev().take(15) {

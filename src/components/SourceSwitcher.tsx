@@ -81,6 +81,7 @@ export function SourceSwitcher({ onError }: { onError: (e: string | null) => voi
   if (running && s?.source === "simulator") label = "Simulator";
   if (running && s?.source === "live") label = `${s.interface}${s.monitorMode ? " · monitor" : ""}`;
   if (running && s?.source === "file") label = finished ? "File replay finished" : "Replaying file";
+  if (running && s?.source === "remote") label = `${s.interface ?? "sensor"}${s.monitorMode ? " · monitor" : ""}`;
 
   return (
     <div className="popover-wrap" ref={ref}>
@@ -170,6 +171,23 @@ export function SourceSwitcher({ onError }: { onError: (e: string | null) => voi
               <div className="t">Open capture file…</div>
               <div className="s ellipsis">{s?.file ?? ".pcap / .pcapng from Wireshark, tcpdump, airodump-ng"}</div>
             </span>
+          </button>
+          <button className={`menu-item ${running && s?.source === "remote" ? "current" : ""}`} disabled={busy}
+            onClick={async () => {
+              const st = await api.getSettings();
+              if (!st.capture.remote.host) {
+                setOpen(false);
+                nav.go("capture");
+                return;
+              }
+              run(() => api.switchSource("remote"));
+            }}>
+            <span className="ic"><Icon name="radar" /></span>
+            <span>
+              <div className="t">Remote sensor</div>
+              <div className="s">ALFA / monitor adapter on a Raspberry Pi or Linux box, over SSH</div>
+            </span>
+            {running && s?.source === "remote" ? <Icon name="check" /> : null}
           </button>
           <div className="menu-sep" />
           <button className="menu-item" onClick={() => { setOpen(false); nav.go("capture"); }}>

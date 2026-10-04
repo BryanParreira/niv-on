@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, TAG_PRESETS, type DeviceDetail as Detail } from "../api";
+import { api, PRIORITIES, TAG_PRESETS, type DeviceDetail as Detail, type Priority } from "../api";
 import { AlertList } from "../components/AlertList";
 import { Avatar, Icon } from "../components/Icon";
 import { Mac } from "../components/Mac";
+import { Risk } from "../components/Risk";
+import { RiskBreakdown } from "../components/RiskBreakdown";
 import { Signal } from "../components/Signal";
 import { TimeSeriesChart } from "../components/TimeSeriesChart";
-import { ago, dateTime, fmtBytes, fmtNum, fmtRate } from "../format";
+import { ago, clockTime, dateTime, fmtBytes, fmtNum, fmtRate } from "../format";
+import { SeverityBadge } from "../components/Severity";
+import { type TimelineEvent } from "../api";
 import { useNav } from "../nav";
 import { useLive, usePoll } from "../store";
 
-type Tab = "overview" | "comms" | "baseline" | "wireless" | "alerts";
+type Tab = "overview" | "timeline" | "comms" | "connections" | "security" | "baseline" | "wireless" | "alerts";
 
 export function DeviceDetail({ mac, onName }: { mac: string; onName: (n: string) => void }) {
   const { status } = useLive();
@@ -47,7 +51,10 @@ export function DeviceDetail({ mac, onName }: { mac: string; onName: (n: string)
 
   const tabs: { id: Tab; label: string; badge?: number | string }[] = [
     { id: "overview", label: "Overview" },
+    { id: "timeline", label: "Timeline" },
     { id: "comms", label: "Communications", badge: newDests ? `${newDests} new` : dests || undefined },
+    { id: "connections", label: "Connections & DNS" },
+    { id: "security", label: "Security", badge: d.findings.length || undefined },
     { id: "baseline", label: "Baseline & schedule" },
     { id: "wireless", label: "Wireless" },
     { id: "alerts", label: "Alerts", badge: openAlerts || undefined },
@@ -74,6 +81,8 @@ export function DeviceDetail({ mac, onName }: { mac: string; onName: (n: string)
                 {d.isAp && <span className="chip accent">access point</span>}
                 {d.randomized && <span className="chip">randomized MAC</span>}
                 {d.learning ? <span className="chip">learning baseline</span> : <span className="chip"><Icon name="lock" size={11} /> baseline locked</span>}
+                {d.priority !== "medium" && <span className={`chip ${d.priority === "critical" || d.priority === "high" ? "accent" : ""}`}>{d.priority} priority</span>}
+                {d.risk > 0 && <span className="chip"><Risk score={d.risk} /></span>}
               </div>
             </div>
           </div>
@@ -95,6 +104,9 @@ export function DeviceDetail({ mac, onName }: { mac: string; onName: (n: string)
 
       {tab === "overview" && <Overview d={d} clock={clock} reload={reload} mac={mac} />}
       {tab === "comms" && <Comms d={d} />}
+      {tab === "timeline" && <Timeline mac={mac} />}
+      {tab === "connections" && <ConnLog mac={mac} />}
+      {tab === "security" && <Security d={d} />}
       {tab === "baseline" && <BaselineTab d={d} />}
       {tab === "wireless" && <Wireless d={d} clock={clock} />}
       {tab === "alerts" && (
@@ -107,6 +119,7 @@ export function DeviceDetail({ mac, onName }: { mac: string; onName: (n: string)
 }
 
 function Overview({ d, clock, reload, mac }: { d: Detail; clock: string; reload: () => void; mac: string }) {
+  const nav = useNav();
   const history = useMemo(() => {
     const now = Math.floor(Date.parse(clock) / 1000);
     const map = new Map(d.history);
@@ -153,15 +166,36 @@ function Overview({ d, clock, reload, mac }: { d: Detail; clock: string; reload:
               format={fmtRate} minMax={1000} area height={180} />
           </div>
           <div className="card">
+            <div className="card-head">
+              <h3>Risk</h3>
+              <span className="sub">what this device's score is made of</span>
+              {d.risk > 0 && <div className="right"><button className="btn sm ghost" onClick={() => nav.openDevice(d.mac, "alerts")}>Alerts <Icon name="chevron" size={12} /></button></div>}
+            </div>
+            <RiskBreakdown parts={d.riskParts} score={d.risk} />
+          </div>
+          <div className="card">
             <div className="card-head"><h3>Identity clues</h3><span className="sub">how Niv.ON recognized this device</span></div>
             <dl className="kv">
               <dt>Vendor (OUI)</dt><dd>{d.vendor ?? (d.randomized ? "Hidden — randomized MAC" : "Unknown")}</dd>
               <dt>Hostnames</dt><dd>{d.hostnames.length ? d.hostnames.join(", ") : <span className="muted">none seen (DHCP / mDNS)</span>}</dd>
-              <dt>OS / firmware hint</dt><dd>{d.vendorClass ?? <span className="muted">—</span>}</dd>
+              <dt>OS / firmware hint</dt><dd>{[d.os, d.vendorClass].filter(Boolean).join(" · ") || <span className="muted">—</span>}</dd>
               <dt>Advertised services</dt>
               <dd>{d.services.length ? <div className="chips">{d.services.map((s) => <span key={s} className="chip mono">{s}</span>)}</div> : <span className="muted">—</span>}</dd>
               <dt>Banners</dt>
               <dd>{d.banners.length ? d.banners.map((b) => <div key={b} className="mono small">{b}</div>) : <span className="muted">— (UPnP server / HTTP user-agent)</span>}</dd>
+              {d.flagged.length > 0 && (
+                <>
+                  <dt>Flagged indicators</dt>
+                  <dd>
+                    <div className="chips">
+                      {d.flagged.map((f) => {
+                        const [kind, value] = [f.slice(0, f.indexOf(":")), f.slice(f.indexOf(":") + 1)];
+                        return <span key={f} className="chip mono" title={kind === "ioc" ? "Watchlist match" : "Generated-looking domain"}>{kind === "ioc" ? "IOC" : "DGA"} · {value}</span>;
+                      })}
+                    </div>
+                  </dd>
+                </>
+              )}
               <dt>Frames</dt>
               <dd>mgmt {fmtNum(d.frames.management)} · ctrl {fmtNum(d.frames.control)} · data {fmtNum(d.frames.data)} · ethernet {fmtNum(d.frames.ethernet)}</dd>
             </dl>
@@ -177,6 +211,7 @@ function TagEditor({ d, mac, reload }: { d: Detail; mac: string; reload: () => v
   const [name, setName] = useState(d.name ?? "");
   const [tag, setTag] = useState(d.tag ?? "");
   const [notes, setNotes] = useState(d.notes);
+  const [priority, setPriority] = useState<Priority>(d.priority);
   const [editing, setEditing] = useState(false);
   const [saved, setSaved] = useState(false);
   useEffect(() => {
@@ -184,6 +219,7 @@ function TagEditor({ d, mac, reload }: { d: Detail; mac: string; reload: () => v
       setName(d.name ?? "");
       setTag(d.tag ?? "");
       setNotes(d.notes);
+      setPriority(d.priority);
     }
   }, [d, editing]);
   const edit = <T,>(fn: (v: T) => void) => (v: T) => {
@@ -191,7 +227,7 @@ function TagEditor({ d, mac, reload }: { d: Detail; mac: string; reload: () => v
     fn(v);
   };
   async function save() {
-    await api.updateDevice(mac, { name, tag, notes });
+    await api.updateDevice(mac, { name, tag, notes, priority });
     setEditing(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
@@ -216,6 +252,15 @@ function TagEditor({ d, mac, reload }: { d: Detail; mac: string; reload: () => v
           <input className="input" placeholder="…or a custom tag" value={TAG_PRESETS.includes(tag) ? "" : tag}
             onChange={(e) => edit(setTag)(e.target.value)} />
           <span className="hint">Auto-classified as “{d.autoClass}”. IoT types get stricter anomaly rules.</span>
+        </div>
+        <div className="field">
+          <span className="label">Asset priority</span>
+          <div className="seg">
+            {PRIORITIES.map((p) => (
+              <button key={p} className={priority === p ? "on" : ""} onClick={() => edit(setPriority)(p)}>{p[0].toUpperCase() + p.slice(1)}</button>
+            ))}
+          </div>
+          <span className="hint">How much this device matters. Raises or lowers alert urgency and scales its risk score (low ×0.5 → critical ×2).</span>
         </div>
         <div className="field">
           <label htmlFor="dnotes">Notes</label>
@@ -383,6 +428,178 @@ function Wireless({ d, clock }: { d: Detail; clock: string }) {
             {d.probedSsids.length ? <div className="chips">{d.probedSsids.map((s) => <span key={s} className="chip">{s}</span>)}</div> : "—"}
             {d.probedSsids.length > 0 && <div className="muted small" style={{ marginTop: 6 }}>Networks this device remembers — a privacy leak attackers use for evil-twin APs.</div>}
           </dd>
+        </dl>
+      </div>
+    </div>
+  );
+}
+
+const KIND_ICON: Record<TimelineEvent["kind"], string> = {
+  device: "devices",
+  baseline: "lock",
+  alert: "alerts",
+  contact: "globe",
+  "new-contact": "globe",
+  fingerprint: "crosshair",
+  dns: "search",
+  transfer: "activity",
+};
+
+function Timeline({ mac }: { mac: string }) {
+  const [events] = usePoll(() => api.getTimeline(mac), 5000, [mac]);
+  const [kinds, setKinds] = useState<Set<string>>(new Set(["alert", "new-contact", "contact", "fingerprint", "transfer", "baseline", "device", "dns"]));
+  const all = events ?? [];
+  const shown = all.filter((e) => kinds.has(e.kind));
+  const toggle = (k: string) => setKinds((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  const FILTERS: [string, string][] = [["alert", "Alerts"], ["new-contact", "New hosts"], ["contact", "Known hosts"], ["dns", "DNS"], ["transfer", "Large transfers"], ["fingerprint", "Fingerprints"], ["baseline", "Milestones"]];
+  let lastDay = "";
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3>Investigation timeline</h3>
+        <span className="sub">alerts, first contacts, lookups, transfers and fingerprints — newest first</span>
+        <div className="right chips">
+          {FILTERS.map(([k, l]) => (
+            <button key={k} className={`chip ${kinds.has(k) ? "on" : ""}`} onClick={() => toggle(k)}>
+              {l} <span className="muted num">{all.filter((e) => e.kind === k || (k === "baseline" && e.kind === "device")).length}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      {events === null ? <div className="empty">Loading…</div> : shown.length === 0 ? <div className="empty">Nothing recorded yet.</div> : (
+        <div className="timeline-list">
+          {shown.slice(0, 600).map((e, i) => {
+            const day = new Date(e.ts).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+            const head = day !== lastDay ? <div className="tl-day">{day}</div> : null;
+            lastDay = day;
+            return (
+              <div key={i}>
+                {head}
+                <div className={`tl-item ${e.kind} ${e.severity ?? ""}`}>
+                  <span className="mono muted small tl-time">{clockTime(e.ts)}</span>
+                  <span className="tl-dot"><Icon name={KIND_ICON[e.kind]} size={12} /></span>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="row" style={{ gap: 8 }}>
+                      {e.severity && <SeverityBadge s={e.severity} />}
+                      <span className={e.kind === "new-contact" ? "" : e.kind === "alert" ? "name" : "dim"}>{e.title}</span>
+                      {e.kind === "new-contact" && <span className="chip">not in baseline</span>}
+                    </div>
+                    {e.detail && <div className="muted small ellipsis" style={{ maxWidth: 900 }}>{e.detail}</div>}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConnLog({ mac }: { mac: string }) {
+  const [conns] = usePoll(() => api.getConnections({ mac, limit: 2000 }), 4000, [mac]);
+  const [dns] = usePoll(() => api.getDns({ mac, limit: 1000 }), 4000, [mac]);
+  const nav = useNav();
+  function search(q: string) {
+    try { localStorage.setItem("niv.lastSearch", q); } catch { /* default */ }
+    nav.go("search");
+  }
+  return (
+    <div className="split">
+      <div className="card pad0">
+        <div className="card-head" style={{ padding: "16px 16px 0" }}>
+          <h3>Connections</h3><span className="sub">last 7 days · {conns?.length ?? 0} shown</span>
+          <div className="right"><button className="btn sm ghost" onClick={() => search(`index=conn mac=${mac} | stats count, sum(bytes) as bytes by remote_ip, domain, service | sort -bytes`)}>Open in Search</button></div>
+        </div>
+        <div className="table-wrap" style={{ maxHeight: 560 }}>
+          <table className="t compact">
+            <thead><tr><th>Start</th><th>Dir</th><th>Remote</th><th>Proto</th><th className="r">Sent</th><th className="r">Received</th><th className="r">Duration</th></tr></thead>
+            <tbody>
+              {(conns ?? []).slice(0, 500).map((f, i) => (
+                <tr key={i}>
+                  <td className="mono small">{dateTime(f.start)}{f.open && <span className="dot live" style={{ marginLeft: 6 }} />}</td>
+                  <td className="small dim">{f.outbound ? "out" : "in"}</td>
+                  <td><div>{f.domain ?? <span className="mono small">{f.remoteIp}</span>}</div>{f.domain && <div className="mono muted small">{f.remoteIp}</div>}</td>
+                  <td className="mono small">{f.proto}{f.remotePort != null ? `/${f.remotePort}` : ""}</td>
+                  <td className="r num">{fmtBytes(f.bytesOut)}</td>
+                  <td className="r num">{fmtBytes(f.bytesIn)}</td>
+                  <td className="r num dim">{Math.max(0, Math.round((Date.parse(f.end) - Date.parse(f.start)) / 1000))} s</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!conns?.length && <div className="empty">No connections logged for this device yet.</div>}
+        </div>
+      </div>
+      <div className="card pad0" style={{ alignSelf: "start" }}>
+        <div className="card-head" style={{ padding: "16px 16px 0" }}><h3>DNS lookups</h3><span className="sub">{dns?.length ?? 0}</span></div>
+        <div className="table-wrap" style={{ maxHeight: 560 }}>
+          <table className="t compact">
+            <tbody>
+              {(dns ?? []).slice(0, 400).map((r, i) => (
+                <tr key={i}>
+                  <td className="mono small muted">{clockTime(r.ts)}</td>
+                  <td><div className="ellipsis" style={{ maxWidth: 260 }}>{r.query}</div><div className="muted small mono ellipsis" style={{ maxWidth: 260 }}>{r.rcode === 3 ? "NXDOMAIN" : r.answers.join(", ") || "—"}</div></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!dns?.length && <div className="empty small">No lookups logged (DNS answers are visible for this computer, or with a gateway / mirror capture).</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Security({ d }: { d: Detail }) {
+  const tls = Object.entries(d.tls).sort((a, b) => Date.parse(b[1].lastSeen) - Date.parse(a[1].lastSeen));
+  const serves = Object.entries(d.serverPorts).sort((a, b) => b[1] - a[1]);
+  return (
+    <div className="split">
+      <div className="grid">
+        <div className="card">
+          <div className="card-head"><h3>Exposures &amp; vulnerabilities</h3><span className="sub">add to the device's risk score</span></div>
+          {d.findings.length === 0 ? <div className="empty small">No exposures found from observed traffic.</div> : d.findings.map((f) => (
+            <div key={f.id} className="alert-row">
+              <SeverityBadge s={f.severity} />
+              <div>
+                <div className="alert-title">{f.title}</div>
+                <div className="alert-msg">{f.detail}</div>
+                {f.cves.length > 0 && <div className="chips" style={{ marginTop: 6 }}>{f.cves.map((c) => <span key={c} className="chip mono">{c}</span>)}</div>}
+              </div>
+              <div />
+            </div>
+          ))}
+        </div>
+        <div className="card">
+          <div className="card-head"><h3>TLS client fingerprints</h3><span className="sub">JA4 (order-independent) and JA3</span></div>
+          {tls.length === 0 ? <div className="muted small">No TLS ClientHello seen from this device.</div> : (
+            <table className="t compact">
+              <thead><tr><th>JA4</th><th>JA3</th><th>Example server</th><th className="r">Seen</th></tr></thead>
+              <tbody>
+                {tls.map(([ja4, t]) => (
+                  <tr key={ja4}>
+                    <td className="mono small">{ja4}{t.legacy && <span className="sev medium" style={{ marginLeft: 6 }}>legacy TLS</span>}{!d.baseline.tls?.includes(ja4) && !d.learning && <span className="chip outline" style={{ marginLeft: 6 }}>new</span>}</td>
+                    <td className="mono small dim">{t.ja3}</td>
+                    <td className="small">{t.sni ?? "—"}</td>
+                    <td className="r small dim">{fmtNum(t.count)}× · {ago(t.lastSeen)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+      <div className="card" style={{ alignSelf: "start" }}>
+        <div className="card-head"><h3>Fingerprint &amp; services</h3></div>
+        <dl className="kv">
+          <dt>OS family</dt><dd>{d.os ?? <span className="muted">unknown</span>}</dd>
+          <dt>DHCP fingerprint</dt><dd className="mono small">{d.dhcpParams ?? <span className="muted">—</span>}</dd>
+          <dt>Serves ports</dt>
+          <dd>{serves.length ? <div className="chips">{serves.map(([p]) => <span key={p} className="chip mono">{p}</span>)}</div> : <span className="muted">none observed</span>}</dd>
+          <dt>Cleartext / legacy</dt>
+          <dd>{d.insecure.length ? <div className="chips">{d.insecure.map((p) => <span key={p} className="sev medium">{p}</span>)}</div> : <span className="muted">none observed</span>}</dd>
+          <dt>DNS resolvers</dt><dd className="mono small">{d.resolvers.join(", ") || "—"}</dd>
         </dl>
       </div>
     </div>
