@@ -1,0 +1,31 @@
+# dependencies & build output
+node_modules
+dist
+src-tauri/target
+src-tauri/gen
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+.idea
+*.swp
+
+# secrets — never commit signing material or credentials
+*.p12
+*.p8
+*.pem
+*.key
+*.cer
+*.mobileprovision
+*.keystore
+.env
+.env.*
+**/AuthKey_*.p8
+**/*secret*
+**/*credentials*
+
+# runtime data
+*.log
+oui.csv
+manuf
+niv-state.json

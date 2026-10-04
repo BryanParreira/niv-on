@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Niv.ON mark: a terminal prompt. The green cursor is the ".ON" — live, always listening. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#232326"/>
+      <stop offset="1" stop-color="#0b0b0c"/>
+    </linearGradient>
+    <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="0" y1="320" x2="0" y2="680">
+      <stop offset="0" stop-color="#f7f7f8"/>
+      <stop offset="1" stop-color="#c4c4ca"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#5cf08a" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#5cf08a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="185.5" fill="none" stroke="#ffffff" stroke-opacity="0.09"/>
+  <g transform="translate(0 32)">
+    <path d="M310 320 L490 480 L310 640" fill="none" stroke="url(#ink)" stroke-width="80" stroke-linecap="square" stroke-linejoin="miter"/>
+    <ellipse cx="640" cy="630" rx="170" ry="80" fill="url(#glow)"/>
+    <rect x="540" y="602" width="200" height="62" fill="#5cf08a"/>
+  </g>
+</svg>

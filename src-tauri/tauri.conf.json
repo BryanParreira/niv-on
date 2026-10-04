@@ -1,0 +1,92 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Niv.ON",
+  "version": "0.1.0",
+  "identifier": "edu.niv.monitor",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Niv.ON",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 680,
+        "label": "main"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Utility",
+    "shortDescription": "Wireless traffic monitor and IoT behavioral analyzer",
+    "longDescription": "Niv.ON captures Wi-Fi and LAN traffic, profiles every device, learns behavioral baselines and flags anomalies such as IoT devices contacting unknown hosts, scans, traffic spikes and deauthentication attacks.",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libpcap0.8"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "libpcap"
+        ]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": true,
+      "dmg": {
+        "background": "dmg/background.tiff",
+        "windowSize": {
+          "width": 640,
+          "height": 428
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 195
+        },
+        "applicationFolderPosition": {
+          "x": 460,
+          "y": 195
+        }
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    },
+    "copyright": "\u00a9 2026 Bryan Parreira",
+    "publisher": "Bryan Parreira",
+    "createUpdaterArtifacts": true
+  },
+  "mainBinaryName": "niv-on",
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyNTlGOEU2MEIxNjNCRjAKUldUd094WUw1dmhaTWgxem1XVWdOTGxOV1p1ZmZhaVo1MjVjNW1wc2pFM29NYVpLUnJTZVFZYlUK",
+      "endpoints": [
+        "https://github.com/BryanParreira/niv-on/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
