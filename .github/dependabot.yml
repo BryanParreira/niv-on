@@ -8,7 +8,10 @@ updates:
     directory: /src-tauri
     schedule: { interval: weekly }
     groups: { rust: { patterns: ["*"], update-types: ["minor", "patch"] } }
+    # Major versions change APIs; those are upgraded deliberately, not by bot.
+    ignore: [{ dependency-name: "*", update-types: ["version-update:semver-major"] }]
   - package-ecosystem: npm
     directory: /
     schedule: { interval: weekly }
     groups: { npm: { patterns: ["*"], update-types: ["minor", "patch"] } }
+    ignore: [{ dependency-name: "*", update-types: ["version-update:semver-major"] }]
