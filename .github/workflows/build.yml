@@ -202,6 +202,23 @@ jobs:
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
 
+      # Tauri notarizes the .app; also notarize + staple the DMG itself so a
+      # downloaded installer opens without any Gatekeeper prompt, even offline.
+      - name: Notarize & staple DMG
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          DMG=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$DMG"
+          spctl -a -t open --context context:primary-signature -vv "$DMG"
+          gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber -R "$GITHUB_REPOSITORY"
+
   # Publish only after every platform uploaded its installer and updater entry,
   # so installed apps never see a release missing their platform.
   publish-release:
