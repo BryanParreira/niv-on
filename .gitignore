@@ -29,3 +29,6 @@ src-tauri/gen
 oui.csv
 manuf
 niv-state.json
+
+# helper scripts read secrets from the keychain at run time; they contain none
+!scripts/*.sh
