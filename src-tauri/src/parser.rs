@@ -664,8 +664,10 @@ pub fn parse_dhcp_routers(d: &[u8]) -> Vec<IpAddr> {
         };
         if code == 3 {
             out.extend(
-                val.chunks_exact(4)
-                    .map(|c| Ipv4Addr::new(c[0], c[1], c[2], c[3]))
+                val.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| Ipv4Addr::from(*c))
                     .filter(|ip| !ip.is_unspecified() && !ip.is_broadcast())
                     .map(IpAddr::V4),
             );

@@ -31,8 +31,10 @@ fn grease(v: u16) -> bool {
 }
 
 fn u16s(d: &[u8]) -> Vec<u16> {
-    d.chunks_exact(2)
-        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+    d.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_be_bytes(*c))
         .collect()
 }
 
